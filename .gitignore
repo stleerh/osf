@@ -1,0 +1,7 @@
+backend/.env
+backend/__pycache__
+backend/faiss_index
+frontend/dist
+frontend/node_modules
+frontend/package.json
+frontend/package-lock.json

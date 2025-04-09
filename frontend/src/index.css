@@ -1,0 +1,372 @@
+body {
+    font-family: sans-serif;
+    margin: 0;
+    background-color: #f4f7f6;
+    color: #333;
+}
+
+.app-container {
+    width: 95%;
+    max-width: 1600px;
+    min-width: 800px;
+    margin: 1vh auto;
+    height: 95vh;
+    background-color: #fff;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Prevent content from spilling */
+}
+
+.app-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    background-color: #004080; /* OpenShift-like blue */
+    color: white;
+    border-bottom: 1px solid #ddd;
+    flex-shrink: 0; /* prevent header from shrinking */
+}
+
+.app-header h1 {
+    margin: 0;
+    font-size: 1.4em;
+}
+
+#login-section {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+#login-section button {
+    padding: 8px 15px;
+    background-color: #e0e0e0;
+    color: #333;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    white-space: nowrap;
+}
+
+#login-section button:hover {
+    background-color: #c0c0c0;
+}
+
+#cluster-status { /* Ensure status doesn't wrap too early */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis; /* Add ellipsis if it's too long */
+    max-width: 600px; /* Adjust max-width if needed */
+}
+
+#cluster-status.logged-in {
+    color: #90ee90; /* Light green */
+    font-weight: bold;
+}
+
+
+.main-content {
+    display: flex;
+    flex-grow: 1; /* Allows main content to fill available space */
+    overflow: hidden; /* Important for scrollable children */
+    padding: 15px;
+    gap: 15px; /* Space between panels */
+}
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    background-color: #ffffff;
+    overflow: hidden; /* Ensure children don't overflow panel */
+    /* --- Equal Width for Panels --- */
+    flex-basis: 0; /* Start with no intrinsic width */
+    flex-grow: 1;  /* Allow both panels to grow equally */
+    min-width: 300px; /* Prevent panels from becoming too narrow */
+}
+
+
+.panel h2 {
+    margin: 0;
+    padding: 10px 15px;
+    background-color: #f0f0f0;
+    border-bottom: 1px solid #ccc;
+    font-size: 1.1em;
+    text-align: center;
+    flex-shrink: 0; /* prevent header from shrinking */
+}
+
+.scrollable {
+    flex-grow: 1; /* Allows scrollable area to fill panel */
+    overflow-y: auto;
+    padding: 10px;
+    background-color: #fdfdfd;
+}
+
+#chat-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.message {
+    padding: 8px 12px;
+    border-radius: 5px;
+    max-width: 85%;
+    overflow-wrap: break-word;
+    word-wrap: break-word; /* Legacy fallback for overflow-wrap */
+    word-break: break-word; /* Helps break words, can be aggressive, use with overflow-wrap */
+    line-height: 1.4; /* Example line height */
+}
+
+.message.user {
+    background-color: #d1e7fd; /* Light blue */
+    align-self: flex-end;
+    margin-left: auto; /* Push to right */
+}
+
+.message.bot {
+    background-color: #e2e3e5; /* Light grey */
+    align-self: flex-start;
+}
+
+.message.error {
+    background-color: #f8d7da; /* Light red */
+    color: #721c24;
+    align-self: center;
+    width: 90%;
+    text-align: left;
+}
+
+.message.info {
+    background-color: #d4edda; /* Light green */
+    color: #155724;
+    align-self: center;
+    width: 90%;
+    text-align: left;
+}
+
+.message.info pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    word-break: break-all;
+    background-color: rgba(0, 0, 0, 0.05);
+    padding: 8px;
+    border-radius: 4px;
+    margin: 6px 0;
+    overflow-x: auto;
+    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
+    font-size: 0.9em;
+    text-align: left;
+}
+
+.message strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 0.9em;
+}
+
+.message p {
+    margin: 0;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    word-break: break-word;
+}
+
+/* Style for the strong tag (Sender Name) */
+.message strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 0.9em;
+}
+
+.input-area {
+    display: flex;
+    padding: 10px;
+    border-top: 1px solid #ccc;
+    align-items: flex-end; /* Align items to the bottom for better look with icons */
+    gap: 8px; /* Add space between textarea and button stack */
+    flex-shrink: 0; /* prevent header from shrinking */
+}
+
+#user-input {
+    flex-grow: 1;
+    padding: 8px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    outline: none;
+    font-family: sans-serif;
+    font-size: 1em;
+    resize: vertical;
+    min-height: 40px;
+    line-height: 1.4;
+    box-sizing: border-box;
+}
+#user-input:focus {
+    border-color: #004080;
+}
+
+/* Styles for the vertical button container */
+.button-stack {
+    display: flex;
+    flex-direction: column; /* Stack items vertically */
+    gap: 4px; /* Space between the buttons */
+}
+
+/* Styles for individual buttons in the stack */
+.button-stack button {
+    padding: 8px 10px;
+    border: 1px solid #ccc;
+    background-color: #e0e0e0;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    border-radius: 4px;
+    display: flex; /* Center icon */
+    justify-content: center;
+    align-items: center;
+    width: 40px; /* Make buttons square-ish */
+    height: 40px;
+    box-sizing: border-box;
+    font-size: 1.1em; /* Slightly larger icon */
+}
+
+.button-stack button:hover {
+    background-color: #c0c0c0;
+}
+
+#mic-button.recording {
+    background-color: #ff6b6b;
+    color: white;
+}
+#mic-button.recording:hover {
+    background-color: #e04141;
+}
+
+/* Ensure Font Awesome icons size correctly if needed */
+.button-stack button i {
+     line-height: 1; /* Prevent extra space around icon */
+}
+
+
+#yaml-panel {
+    flex-grow: 1;
+    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', 'Source Code Pro', 'Fira Code', monospace;
+    font-size: 0.9em;
+    font-weight: 500;
+    border: none;
+    outline: none;
+    resize: none;
+    padding: 10px;
+    line-height: 1.4;
+    background-color: #fdfdfd;
+    color: #333;
+}
+
+#submit-button {
+    padding: 12px;
+    margin: 10px;
+    background-color: #28a745; /* Green */
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    align-self: center;
+    flex-shrink: 0; /* prevent header from shrinking */
+}
+
+#submit-button:hover {
+    background-color: #218838;
+}
+#submit-button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+
+/* Login Dialog Styles */
+dialog {
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 2em;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    width: 90%;
+    max-width: 450px; /* Slightly wider for K8s info */
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+#login-form .form-group {
+    margin-bottom: 1em;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 1em;
+}
+
+#login-form label {
+    display: block;
+    margin-top: 1em;
+    margin-bottom: 0.5em;
+    font-weight: bold;
+}
+
+/* Style radio button labels */
+#login-form input[type="radio"] + label {
+    display: inline-block;
+    margin-right: 15px;
+    margin-left: 3px;
+    font-weight: normal;
+}
+
+#login-form input[type="text"],
+#login-form input[type="password"] {
+    width: 100%;
+    padding: 8px;
+    box-sizing: border-box;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+#login-form small {
+    display: block;
+    font-size: 0.8em;
+    color: #666;
+    margin-top: 5px;
+}
+
+
+.dialog-buttons {
+    margin-top: 1.5em;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+#login-form button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#login-submit {
+    background-color: #004080;
+    color: white;
+}
+#login-cancel {
+    background-color: #e0e0e0;
+    color: #333;
+}
+
+.error-message {
+    color: #dc3545; /* Red */
+    font-size: 0.9em;
+    margin-top: 10px;
+    min-height: 1.2em; /* Reserve space */
+}

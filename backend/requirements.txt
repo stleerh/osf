@@ -1,0 +1,15 @@
+Flask
+Flask-Cors
+python-dotenv
+openai
+pydub
+requests
+# --- Add RAG Dependencies ---
+langchain
+langchain-openai
+langchain-community # For loaders/splitters if needed beyond core
+faiss-cpu # Or faiss-gpu if you have CUDA setup
+tiktoken # Required by langchain for token counting
+# Optional: Add loaders for specific file types if needed
+# pypdf
+# unstructured
