@@ -37,6 +37,9 @@ Prerequisites:
     ```
     cd backend
     pip install -r requirements.txt
+
+    # if running Python 3.13+
+    pip install audioop-lts
     ```
 
 3. Set up OpenAI key and Flask key
@@ -51,11 +54,14 @@ Prerequisites:
 4. Set up frontend
 
     ```
+    cd ..
     npm create vite@latest frontend -- --template react
+      > Choose "Ignore files and continue".
     cd frontend
     npm install
 
-    rm -rf .gitignore README.md eslint.config.js public src/App.css src/App.css src/assets
+    rm -rf .gitignore README.md eslint.config.js public src/App.css src/assets
+    git restore index.html src/App.jsx src/index.css src/main.jsx
     ```
 
 ## Run application
@@ -63,6 +69,8 @@ Prerequisites:
 1. (Optional) Switch to your virtual environment
 
     ```
+    cd ..
+    # if not done already
     source pyenv/bin/activate
     ```
 
