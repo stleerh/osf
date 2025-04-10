@@ -1,8 +1,9 @@
-import os
-import subprocess
-import re
-import sys
 import io
+import os
+import re
+import subprocess
+import sys
+import yaml
 from urllib.parse import urlparse, urlunparse
 
 from flask import Flask, render_template, request, jsonify, session
@@ -31,9 +32,21 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'mysecret')
 CORS(app, supports_credentials=True, origins=["http://localhost:5173", "http://127.0.0.1:5173"]) # Adjust port if needed
 
+#llm_model = 'gpt-3.5-turbo'
+llm_model = 'gpt-4o-mini'
+#llm_model = 'o3-mini'
+temperature = 0
+ACTION_MARKER = "~OSF_ACTION:" # Define the marker
+
+# --- Initialize OpenAI Client and LLM ---
 try:
     openai_client = OpenAI()
-    llm = ChatOpenAI(model="o3-mini")
+    if llm_model != 'o3-mini':
+        print(f"Initializing ChatOpenAI with model='{llm_model}', temperature={temperature}")
+        llm = ChatOpenAI(model=llm_model, temperature=temperature)
+    else:
+        print(f"Initializing ChatOpenAI with model='{llm_model}' (temperature omitted)")
+        llm = ChatOpenAI(model=llm_model)
 except Exception as e:
     print(f"Error initializing OpenAI client or Langchain Chat Model: {e}")
     openai_client = None
@@ -85,13 +98,14 @@ def extract_yaml(text):
 
 def parse_osf_action(text):
     """
-    Parses the *OSF_ACTION: line from the end of the text.
+    Parses the ~OSF_ACTION: line from the end of the text.
+    Strips potential trailing non-alphanumeric chars from keywords.
     Returns a tuple: (action_type, action_data)
     Example return values:
-    ('oc_apply', None)
-    ('cmd', 'oc get pods; kubectl get nodes')
-    ('submit', None)
-    (None, None) if no valid action line is found.
+      ('oc_apply', None)
+      ('cmd', 'oc get pods; kubectl get nodes')
+      ('submit', None)
+      (None, None) if no valid action line is found.
     """
     action_line = None
     # Find the last non-empty line
@@ -99,49 +113,43 @@ def parse_osf_action(text):
     for line in reversed(lines):
         stripped_line = line.strip()
         if stripped_line:
-            if stripped_line.startswith("*OSF_ACTION:"):
+            if stripped_line.startswith(ACTION_MARKER):
                 action_line = stripped_line
             break # Found the last non-empty line, stop searching
 
     if not action_line:
+        print("No '*OSF_ACTION:' line found at the end.")
         return None, None
 
-    action_content_raw = action_line[len("*OSF_ACTION:"):].strip()
+    action_content_raw = action_line[len(ACTION_MARKER):].strip()
 
     # Handle potential command first, as it has '='
     if action_content_raw.startswith("cmd="):
         command_string = action_content_raw[len("cmd="):].strip()
-        if command_string:
-            return "cmd", command_string
-        else:
-            print("Warning: Found 'cmd=' action with empty command string.")
-            return None, None
+        return ("cmd", command_string) if command_string else (None, None)
 
     # For simple keywords, strip common trailing non-alphanumeric chars like '*'
-    # You could use regex for more complex cleaning if needed:
-    # action_keyword = re.sub(r'[^\w_-]+$', '', action_content_raw)
-    # Simpler approach: Check known keywords and allow trailing junk
-    action_keyword_cleaned = action_content_raw.rstrip('*,.;:! ') # Remove common trailing chars
+    action_keyword_cleaned = action_content_raw.rstrip('*,.;:!~ ') # Added ~
+    if action_keyword_cleaned != action_content_raw:
+        print(f"Cleaned action keyword: {repr(action_keyword_cleaned)}")
 
     KNOWN_SIMPLE_ACTIONS = [
-        "oc_apply", "oc_create", "kubectl_apply",
-        "kubectl_create", "submit", "login", "logout"
+        "oc_apply", "kubectl_apply", "login", "logout", "submit"
     ]
 
     if action_keyword_cleaned in KNOWN_SIMPLE_ACTIONS:
-         print(f"Cleaned action keyword '{action_content_raw}' -> '{action_keyword_cleaned}'")
+         print(f"Match found! Returning: ({action_keyword_cleaned}, None)")
          return action_keyword_cleaned, None
-
-    # If it wasn't cmd= or one of the cleaned known actions, parsing failed
-    print(f"Warning: Found *OSF_ACTION: but couldn't parse content: '{action_content_raw}' (Cleaned: '{action_keyword_cleaned}')")
-    return None, None # Unknown action
+    else:
+        print(f"Warning: Could not parse OSF Action content: '{action_content_raw}' (Cleaned: '{action_keyword_cleaned}')")
+        return None, None
 
 def remove_osf_action_line(text):
-    """Removes the *OSF_ACTION: line if it's the last line."""
+    """Removes the ~OSF_ACTION: line if it's the last line."""
     lines = text.strip().split('\n')
-    if lines and lines[-1].strip().startswith("*OSF_ACTION:"):
+    if lines and lines[-1].strip().startswith(ACTION_MARKER):
         return "\n".join(lines[:-1]).strip()
-    return text.strip() # Return original text if no action line found at the end
+    return text.strip()
 
 
 def run_subprocess(command_args, input_data=None, timeout=60):
@@ -153,14 +161,25 @@ def run_subprocess(command_args, input_data=None, timeout=60):
             input=input_data,
             capture_output=True,
             text=True,
-            check=False,
+            check=False,  # Important: Don't raise exception on non-zero exit codes here
             timeout=timeout
         )
         if process.returncode == 0:
             return True, process.stdout.strip()
         else:
+            # Command failed (non-zero exit code) - Check for "AlreadyExists" for oc create
             error_output = process.stderr.strip() if process.stderr.strip() else process.stdout.strip()
-            return False, error_output or f"Command '{executable}' failed with exit code {process.returncode}"
+            error_message = error_output or f"Command '{executable}' failed with exit code {process.returncode}"
+
+            # --- Check for "AlreadyExists" and ignore for 'oc create' ---
+            if executable == 'oc' and command_args[1] == 'create' and "AlreadyExists" in error_message:
+                print(f"Info: 'oc create' command reported 'AlreadyExists' error. Ignoring as success.")
+                # Treat "AlreadyExists" in oc create as success, return a specific message
+                return True, "Object already exists (ignored)." # Return success=True, custom output
+
+            # For all other failures, return False and the error message
+            return False, error_message
+
     except FileNotFoundError:
         return False, f"Error: '{executable}' command not found. Make sure it's installed and in your PATH."
     except subprocess.TimeoutExpired:
@@ -216,6 +235,7 @@ def chat():
         session.modified = True
 
     # --- Add User Message & Manage History ---
+    # Only add the text part of the user's prompt to the persistent history
     session['conversation'].append({"role": "user", "content": user_prompt})
     max_history = 10 # Define max user/assistant pairs
     if len(session['conversation']) > max_history * 2 + 1:
@@ -227,122 +247,114 @@ def chat():
          session.modified = True
     # --- End User History Management ---
 
-    bot_reply_full = "Sorry, something went wrong."
-
     combined_input = user_prompt # Start with user text
     if current_yaml_from_user and current_yaml_from_user.strip():
         combined_input += f"\n\n[User's Current YAML Editor Content]:\n```yaml\n{current_yaml_from_user}\n```"
 
+    bot_reply_full = "Sorry, something went wrong."
+
     try:
-        # --- RAG / LLM Call (as before, using combined_input) ---
+        # --- RAG / LLM Call ---
         if rag_chain:
-            print(f"Invoking RAG chain for prompt: {combined_input}")
+            print(f"Invoking RAG chain with model {llm_model}...")
             response = rag_chain.invoke({"input": combined_input})
             bot_reply_full = response.get("answer", "Sorry, I couldn't generate an answer using the available documents.").strip()
             print(f"RAG chain response received.")
+
         # --- Fallback to Non-RAG (if RAG failed or isn't setup) ---
         else:
-            print(f"RAG not available. Using direct LLM call for prompt: {user_prompt}")
+            print(f"RAG not available. Using direct LLM call with model {llm_model}...")
             # Construct non_rag_messages including SYSTEM_PROMPT and combined_input potentially split
             # This part needs careful construction if combined_input is long
             non_rag_messages = list(session['conversation']) # includes system + user text prompt
+            # Append the current YAML as a separate user message *for this call only*
             if current_yaml_from_user and current_yaml_from_user.strip():
                 non_rag_messages.append({"role": "user", "content": f"[User is currently viewing/editing this YAML]:\n```yaml\n{current_yaml_from_user}\n```"})
+
+            # Ensure system prompt is present
             if len(non_rag_messages) > 0 and non_rag_messages[0]["role"] != "system":
                 non_rag_messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
-            response = openai_client.chat.completions.create(
-                model="o3-mini", messages=non_rag_messages
-            )
+            common_params = {
+                "model": llm_model,
+                "messages": non_rag_messages
+            }
+            if llm_model != 'o3-mini':
+                common_params["temperature"] = temperature
+
+            response = openai_client.chat.completions.create(**common_params)
             bot_reply_full = response.choices[0].message.content.strip()
+            print(f"Direct LLM response received.")
         # --- End RAG / LLM Call ---
-        print(f"Direct LLM response received.\n{bot_reply_full}")
+        print(f"Response:\n{bot_reply_full}") # debugging
 
 
         # --- Process Reply ---
-        # 1. Parse the action *before* adding to history or modifying text
         action_type, action_data = parse_osf_action(bot_reply_full)
-
-        # 2. Get text without action line
         user_visible_text_raw = remove_osf_action_line(bot_reply_full)
-
-        # 3. Extract YAML content (doesn't include backticks)
         extracted_yaml_content = extract_yaml(user_visible_text_raw)
 
-        # 4. Determine final reply for chat panel and YAML for panel
+        # --- Initialize final_reply_for_chat with the base text ---
         final_reply_for_chat = user_visible_text_raw # Default to full text (minus action)
         yaml_for_panel = None
+        command_action = None # For frontend button state
 
-        if extracted_yaml_content:
-            yaml_for_panel = extracted_yaml_content
-            # Try to remove the full YAML block (including ```) from the raw text
-            # Use a regex similar to extract_yaml but capture the whole block
-            yaml_block_pattern = r"```(yaml|yml)?\s*([\s\S]*?)\s*```"
-            match = re.search(yaml_block_pattern, user_visible_text_raw, re.MULTILINE)
+       # --- Determine final values based on action ---
+        if action_type == 'submit':
+            command_action = "apply"
+        else:
+            # --- Potentially handle YAML generation (apply actions or no action) ---
+            extracted_yaml_content = extract_yaml(user_visible_text_raw)
+            # command_action might be set based on action_type EVEN IF no YAML is extracted
+            command_action = "apply" if action_type in ["oc_apply", "kubectl_apply"] else None
 
-            if match:
-                # If we found the block, remove it and keep surrounding text
-                full_yaml_block = match.group(0)
-                # Replace only the first occurrence to avoid issues if multiple blocks exist
-                text_without_yaml = user_visible_text_raw.replace(full_yaml_block, '', 1).strip()
-                # Use remaining text if not empty, otherwise use canned message
-                if text_without_yaml:
-                     final_reply_for_chat = text_without_yaml
-                     # Optionally add a note that YAML was moved
-                     final_reply_for_chat += "\n\n(YAML placed in the panel.)"
-                else:
-                    # If removing YAML leaves nothing, use a canned message
-                    final_reply_for_chat = "Okay, I've placed the generated YAML in the panel."
-                    # Add command info if applicable (re-fetch derived command_action)
-                    _derived_cmd_action = None
-                    if action_type in ["oc_apply", "kubectl_apply"]: _derived_cmd_action = "apply"
-                    elif action_type in ["oc_create", "kubectl_create"]: _derived_cmd_action = "create"
-                    if _derived_cmd_action:
-                         final_reply_for_chat += f" Review it and use 'Submit to Cluster' ({_derived_cmd_action})."
-            else:
-                 # Fallback: If regex didn't find the ``` block but extract_yaml did (e.g., raw YAML),
-                 # it's harder to cleanly remove. Use the canned message.
-                 final_reply_for_chat = "Okay, I've placed the generated YAML in the panel."
-                 _derived_cmd_action = None
-                 if action_type in ["oc_apply", "kubectl_apply"]: _derived_cmd_action = "apply"
-                 elif action_type in ["oc_create", "kubectl_create"]: _derived_cmd_action = "create"
-                 if _derived_cmd_action:
-                     final_reply_for_chat += f" Review it and use 'Submit to Cluster' ({_derived_cmd_action})."
+            if extracted_yaml_content:
+                yaml_for_panel = extracted_yaml_content
+                user_is_logged_in = session.get('cluster_logged_in', False)
 
-        # 5. Add the final chat reply (without YAML) to conversation history
+                # Try to remove the full YAML block (including ```) from the raw text
+                # Use a regex similar to extract_yaml but capture the whole block
+                yaml_block_pattern = r"```(yaml|yml)?\s*([\s\S]*?)\s*```"
+                match = re.search(yaml_block_pattern, user_visible_text_raw, re.MULTILINE)
+
+                # Determine the base message when YAML is present
+                base_yaml_message = "Okay, I've placed the generated YAML in the panel."
+                if match:
+                    full_yaml_block = match.group(0)
+                    text_without_yaml = user_visible_text_raw.replace(full_yaml_block, '', 1).strip()
+                    if text_without_yaml:
+                        # Use remaining text + standard note if text exists besides YAML
+                        base_yaml_message = text_without_yaml + "\n\n(YAML placed in the panel.)"
+
+                # Re-assign final_reply_for_chat only if YAML was found
+                final_reply_for_chat = base_yaml_message # Start with base message
+
+                # Conditionally add submit/login instructions based on command_action state
+                if command_action == 'apply' and user_is_logged_in:
+                    final_reply_for_chat += " Review it and use 'Submit to Cluster' to apply the changes."
+                elif command_action == 'apply' and not user_is_logged_in:
+                    final_reply_for_chat += " Please log in to a cluster if you want to apply this YAML."
+
+        # --- Add Assistant Message & Manage History ---
+        # Add the assistant's textual reply (without YAML block) to persistent history
         session['conversation'].append({"role": "assistant", "content": final_reply_for_chat})
-        # Apply history limit *again* after adding assistant message
-        # Same logic as after adding user message
-        if len(session['conversation']) > max_history * 2 + 1:
-             items_to_keep = max_history * 2
-             session['conversation'] = [session['conversation'][0]] + session['conversation'][-items_to_keep:]
-             print(f"History truncated (after assistant msg). Length: {len(session['conversation'])}")
-             session.modified = True
 
-        # 6. Store action details in session
+        # --- Store Action Details ---
         session['last_osf_action_type'] = action_type
         session['last_osf_action_data'] = action_data
-
-        # For compatibility with submit logic, map yaml actions to command_action
-        command_action = None
-        if action_type in ["oc_apply", "kubectl_apply"]:
-            command_action = "apply"
-        elif action_type in ["oc_create", "kubectl_create"]:
-            command_action = "create"
-        # Store this derived action for the submit button logic
-        session['last_command_action'] = command_action # Used by /submit endpoint check
+        command_action = "apply" if action_type in ["oc_apply", "kubectl_apply"] else None
+        session['last_command_action'] = command_action
         session.modified = True
-
 
         # --- Prepare JSON Response ---
         response_payload = {
-            "reply": final_reply_for_chat, # Text without the action line
-            "yaml": yaml_for_panel,        # YAML extracted from the text reply
-            "osf_action": {                # New structured action info
-                "type": action_type,       # e.g., "oc_apply", "cmd", "login", None
-                "data": action_data        # e.g., None, "oc get pods", None
-            }
-            ,"command_action": command_action
+            "reply": final_reply_for_chat, # Use the final determined value
+            "yaml": yaml_for_panel,
+            "osf_action": {
+                "type": action_type, # e.g., "oc_apply", "cmd", "login", None
+                "data": action_data # e.g., None, "oc get pods", None
+            },
+            "command_action": command_action
         }
 
         print(f"--- Backend /chat Response ---")
@@ -512,37 +524,45 @@ def submit_yaml():
 
     data = request.json
     yaml_content = data.get('yaml')
-    # The 'command_action' sent from frontend ('apply'/'create') still determines user intent for THIS submission
-    requested_action_intent = data.get('command_action')
 
     if not yaml_content:
         return jsonify({"success": False, "error": "YAML content is empty."}), 400
-    if requested_action_intent not in ['apply', 'create']:
-         return jsonify({"success": False, "error": "Invalid command action specified."}), 400
 
     # Retrieve the last action suggested by the LLM from the session
     last_osf_action_type = session.get('last_osf_action_type')
 
-    last_suggested_action_verb = None
-    # Derive the action verb ('apply' or 'create') from the specific type
-    if last_osf_action_type in ["oc_apply", "kubectl_apply"]:
-        last_suggested_action_verb = "apply"
-    elif last_osf_action_type in ["oc_create", "kubectl_create"]:
-        last_suggested_action_verb = "create"
+    # Check if the last action suggested by the LLM was one that permits submission
+    if last_osf_action_type not in ["oc_apply", "kubectl_apply"]:
+         error_msg = f"Cannot submit YAML. The last suggested action by the assistant was '{last_osf_action_type}', not 'oc_apply' or 'kubectl_apply'. Please ask the assistant again."
+         print(f"Submit Action Blocked: Last action was '{last_osf_action_type}'.")
+         return jsonify({"success": False, "error": error_msg}), 400
 
-    # --- Security/Consistency Check ---
-    # Check if the user's requested intent (apply/create) matches the verb derived from the LLM's last specific suggestion.
-    if requested_action_intent != last_suggested_action_verb:
-        # Define the error message *inside* the block where the mismatch is confirmed
-        error_msg = f"Action mismatch. User intent is '{requested_action_intent}', but last suggested action was '{last_osf_action_type}' (implying '{last_suggested_action_verb}'). Ask the assistant again."
-        if not last_osf_action_type:
-             error_msg = f"Action mismatch. User intent is '{requested_action_intent}', but no action was suggested by the assistant recently."
+    final_action_verb = "apply" # Default to apply
+    try:
+        # ... (YAML parsing logic using yaml.safe_load_all remains the same) ...
+        yaml_docs = list(yaml.safe_load_all(yaml_content))
+        if not yaml_docs:
+             return jsonify({"success": False, "error": "YAML content is empty or invalid."}), 400
 
-        print(f"Submit Action Mismatch: Requested='{requested_action_intent}', Session Last OSF Action='{last_osf_action_type}' (Verb='{last_suggested_action_verb}')")
-        return jsonify({"success": False, "error": error_msg}), 400
-    # --- End Check ---
+        first_doc = yaml_docs[0]
+        if isinstance(first_doc, dict):
+             kind = first_doc.get('kind')
+             print(f"Detected Kind: {kind}")
+             CREATE_ONLY_KINDS = ["Namespace", "Project", "PersistentVolume"]
+             if kind in CREATE_ONLY_KINDS:
+                 print(f"Kind '{kind}' detected. Switching action to 'create'.")
+                 final_action_verb = "create"
+        else:
+             print("Warning: First document in YAML is not a dictionary object. Defaulting to 'apply'.")
 
+    except yaml.YAMLError as e:
+        # ... (YAML error handling remains the same) ...
+        return jsonify({"success": False, "error": f"Invalid YAML format: {e}"}), 400
+    except Exception as e:
+        # ... (Other error handling remains the same) ...
+        return jsonify({"success": False, "error": f"Error processing YAML: {e}"}), 500
 
+    # --- Determine Tool/Command ---
     cluster_type = session.get('cluster_type')
     cluster_info = session.get('cluster_info') # Context name for K8s, display URL for OS
 
@@ -552,39 +572,40 @@ def submit_yaml():
     tool = None
     command = []
 
-    # Determine tool based on the *specific* OSF action type stored in session
-    if last_osf_action_type == "oc_apply" or last_osf_action_type == "oc_create":
+    # Determine tool based on the LLM's suggestion (oc_* vs kubectl_*)
+    if last_osf_action_type == "oc_apply":
         tool = 'oc'
-        if cluster_type != 'openshift': return jsonify({"success": False, "error": f"Action '{last_osf_action_type}' requires OpenShift login, but currently logged into {cluster_type}."}), 400
-        command = [tool, requested_action_intent, "-f", "-"] # Use user's intent here
-    elif last_osf_action_type == "kubectl_apply" or last_osf_action_type == "kubectl_create":
+        if cluster_type != 'openshift':
+             return jsonify({"success": False, "error": f"Action '{last_osf_action_type}' requires OpenShift, but logged into {cluster_type}."}), 400
+        # Use the determined final_action_verb ('apply' or 'create')
+        command = [tool, final_action_verb, "-f", "-"] # <<< USE final_action_verb
+    elif last_osf_action_type == "kubectl_apply":
         tool = 'kubectl'
-        if cluster_type != 'kubernetes': return jsonify({"success": False, "error": f"Action '{last_osf_action_type}' requires Kubernetes login, but currently logged into {cluster_type}."}), 400
-        if not cluster_info: return jsonify({"success": False, "error": "Kubernetes context not found in session."}), 500
-        command = [tool, requested_action_intent, "--context", cluster_info, "-f", "-"] # Use user's intent
-    elif last_osf_action_type == "submit":
-        # "submit" action type - use default tool based on current login
-        if cluster_type == 'openshift':
-             tool = 'oc'
-             command = [tool, requested_action_intent, "-f", "-"]
-        elif cluster_type == 'kubernetes':
-             tool = 'kubectl'
-             if not cluster_info: return jsonify({"success": False, "error": "Kubernetes context not found for 'submit' action."}), 500
-             command = [tool, requested_action_intent, "--context", cluster_info, "-f", "-"]
-        else:
-             return jsonify({"success": False, "error": "Cannot perform 'submit' action without known cluster type."}), 400
+        if cluster_type != 'kubernetes':
+             return jsonify({"success": False, "error": f"Action '{last_osf_action_type}' requires Kubernetes, but logged into {cluster_type}."}), 400
+        if not cluster_info:
+             return jsonify({"success": False, "error": "Kubernetes context not found."}), 500
+        # Use the determined final_action_verb ('apply' or 'create')
+        command = [tool, final_action_verb, "--context", cluster_info, "-f", "-"] # <<< USE final_action_verb
     else:
-        # Should not happen if consistency check passed, but handle anyway
-        return jsonify({"success": False, "error": f"Cannot submit YAML with last action type: '{last_osf_action_type}'"}), 400
+         # Should not happen if consistency check passed
+         return jsonify({"success": False, "error": f"Cannot submit YAML with last action type: '{last_osf_action_type}'"}), 400
 
 
+    print(f"Determined final action: '{final_action_verb}' with tool: '{tool}'")
     print(f"Running command: {' '.join(command)}")
     success, output = run_subprocess(command, input_data=yaml_content)
+
+    # --- Clear Session State & Return Result ---
+    session.pop('last_osf_action_type', None)
+    session.pop('last_osf_action_data', None)
+    session.pop('last_command_action', None) # Clear this too
+    session.modified = True
+
     if success:
-        print(f"{tool} {requested_action_intent} successful.")
         return jsonify({"success": True, "output": output, "tool_used": tool})
     else:
-        print(f"{tool} {requested_action_intent} failed: {output}")
+        print(f"{tool} {final_action_verb} failed: {output}")
         return jsonify({"success": False, "error": output, "tool_used": tool})
 
 
@@ -594,5 +615,6 @@ if __name__ == '__main__':
         print("WARNING: OpenAI client failed to initialize. LLM features will not work.")
     if not vector_store:
         print("WARNING: RAG vector store failed to initialize. Chatbot will not use retrieved context.")
-    # Start Flask app
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    # Production mode only if FLASK_DEBUG=0
+    debug = False if os.environ.get('FLASK_DEBUG', '') == '0' else True
+    app.run(debug=debug, host='0.0.0.0', port=5001)

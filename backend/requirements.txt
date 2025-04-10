@@ -3,6 +3,7 @@ Flask-Cors
 python-dotenv
 openai
 pydub
+pyyaml
 requests
 # --- Add RAG Dependencies ---
 langchain

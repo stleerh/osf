@@ -2,7 +2,7 @@ import React from 'react';
 
 function YamlPanel({ yamlContent, onYamlChange, isLoggedIn, lastCommandAction, onSubmitYaml, isSubmittingYaml }) {
     const hasYaml = yamlContent && yamlContent.trim().length > 0;
-    const canSubmit = isLoggedIn && hasYaml && lastCommandAction && !isSubmittingYaml;
+    const canSubmit = isLoggedIn && hasYaml && lastCommandAction === 'apply' && !isSubmittingYaml;
 
     let submitTitle = "Submit to Cluster";
     if (isSubmittingYaml) {
@@ -36,7 +36,7 @@ function YamlPanel({ yamlContent, onYamlChange, isLoggedIn, lastCommandAction, o
                 id="submit-button"
                 disabled={!canSubmit}
                 title={submitTitle}
-                onClick={() => onSubmitYaml(yamlContent, lastCommandAction)} // Pass action back
+                onClick={() => onSubmitYaml(yamlContent)}
             >
                 {isSubmittingYaml ? 'Submitting...' : 'Submit to Cluster'}
             </button>

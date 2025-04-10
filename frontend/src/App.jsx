@@ -280,34 +280,38 @@ function App() {
 
 
     // Submit handler (called by button OR by 'submit' action)
-    const handleSubmitYaml = async (yaml, actionIntent) => {
-        // actionIntent is 'apply' or 'create' based on lastCommandAction state
-        if (!isLoggedIn || !yaml || !actionIntent || isProcessing || isSubmittingYaml) {
-            console.warn("Submit YAML conditions not met inside handler.", {isLoggedIn, yaml: !!yaml, actionIntent, isProcessing, isSubmittingYaml});
+    const handleSubmitYaml = async (yaml) => {
+        // Check conditions: Use lastCommandAction state for intent check internally
+        // The button is only enabled if lastCommandAction is 'apply', so this check implicitly uses it.
+        if (!isLoggedIn || !yaml || !lastCommandAction || isProcessing || isSubmittingYaml) {
+            console.warn("Submit YAML conditions not met inside handler.", {isLoggedIn, yaml: !!yaml, lastCommandAction, isProcessing, isSubmittingYaml});
+            addMessage('bot', 'Cannot submit: Conditions not met (check login, YAML, action state).', 'error');
             return;
         }
 
-        addMessage('bot', `Submitting YAML via '${actionIntent}' intent...`, 'info');
+        // Use the state value 'lastCommandAction' which should be 'apply' if button was enabled
+        const actionToLog = lastCommandAction;
         setIsSubmittingYaml(true);
 
         try {
-            // Send the user's intent ('apply' or 'create') along with the YAML
-            // The backend will verify this against the *specific* last suggested OSF action
+            // Send ONLY the YAML. Backend determines final verb (apply/create).
             const response = await fetch('/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ yaml: yaml, command_action: actionIntent }) // Pass user intent
+                body: JSON.stringify({ yaml: yaml })
             });
 
             const data = await response.json();
             // Backend now returns tool_used based on its logic
             const toolUsed = data.tool_used || 'cluster tool';
 
+            // Log based on the action the backend *actually* performed (if available/reliable)
+            // For now, just use the original intent for logging success/failure message
             if (data.success) {
-                addMessage('bot', `YAML submitted successfully via '${toolUsed} ${actionIntent}'.\nOutput:\n<pre>${data.output || '(No output)'}</pre>`, 'info');
+                addMessage('bot', `YAML submitted successfully via '${toolUsed}'.\nOutput:\n<pre>${data.output || '(No output)'}</pre>`, 'info');
             } else {
-                const errorMessage = `Error submitting YAML via '${toolUsed} ${actionIntent}':\n<pre>${data.error || 'Unknown error'}</pre>`;
+                const errorMessage = `Error submitting YAML via '${toolUsed}':\n<pre>${data.error || 'Unknown error'}</pre>`;
                 addMessage('bot', errorMessage, 'error');
             }
 
@@ -368,29 +372,40 @@ function App() {
                 console.log(`Processing OSF Action: ${action.type}`, action.data || '');
                 switch (action.type) {
                     case 'oc_apply':
-                    case 'oc_create':
                     case 'kubectl_apply':
-                    case 'kubectl_create':
-                        // Action handled by enabling the submit button via lastCommandAction state.
-                        // User clicks the button.
-                        addMessage('bot', `Action suggested: ${action.type}. Use the 'Submit to Cluster' button after reviewing the YAML.`, 'info');
+                        // The main data.reply already informed the user.
+                        // Action handled by enabling the submit button via setLastCommandAction done above.
                         break;
 
                     case 'submit':
                         // Simulate clicking the submit button
-                        addMessage('bot', 'Action requested: Submitting YAML to cluster...', 'info');
-                        // Call the submit handler directly.
-                        // It uses the *current* yamlContent state and the *derived* 'apply'/'create'
-                        // state (lastCommandAction) which should have been set by the backend
-                        // if the submit action was related to a previous apply/create suggestion.
-                        // We need to ensure lastCommandAction has the correct 'apply'/'create' value
-                        // *before* calling this. The backend logic now sets this correctly.
-                        if (lastCommandAction && yamlContent) { // Check if there's an action and yaml
-                            handleSubmitYaml(yamlContent, lastCommandAction);
+                        addMessage('bot', 'Action requested: Submit YAML to cluster');
+
+                        const currentYaml = yamlContent; // Get current state value
+                        const currentAction = lastCommandAction; // Get current state value
+
+                        if (isLoggedIn && currentYaml && currentAction === 'apply') {
+                            // Conditions met, proceed to call the submit handler
+                            // Message indicates proceeding, handleSubmitYaml will add final status
+                            addMessage('bot', 'Proceeding with YAML submission...', 'info');
+                            handleSubmitYaml(currentYaml); // Call submit handler with current YAML
                         } else {
-                            addMessage('bot', 'Cannot auto-submit: No YAML content or associated action (apply/create) found.', 'error');
+                            let reason = "";
+                            if (!isLoggedIn) {
+                                reason = "You are not logged in.";
+                            } else if (!currentYaml) {
+                                reason = "There is no YAML content in the panel to submit.";
+                            } else if (currentAction !== 'apply') {
+                                // This means the last relevant LLM suggestion wasn't oc_apply/kubectl_apply
+                                reason = `An 'apply' action was not suggested recently (last action state: ${currentAction}). Cannot submit.`;
+                            } else {
+                                reason = "Unknown prerequisite not met."; // Fallback
+                            }
+                            // Add the specific error message
+                            addMessage('bot', `Cannot submit: ${reason}`, 'error');
+                            console.warn(`Auto-submit blocked. Reason: ${reason}`);
                         }
-                        break; // <<<--- CHANGE HERE
+                        break;
 
                     case 'cmd':
                         // Display the command(s) to the user. Maybe add a "copy" button later?
@@ -400,17 +415,24 @@ function App() {
                         // Note: We are NOT executing these commands automatically for security.
                         break;
                     case 'login':
-                        // Prompt user to log in, maybe open the dialog?
-                        addMessage('bot', 'Action required: Please log in to proceed.', 'info');
-                        // Optionally open the login dialog automatically:
+                        // Simulate clicking the "Login" button
+                        addMessage('bot', 'Action requested: Login'); // No 'info' type needed for gray
                         if (!isLoggedIn) {
-                             setIsLoginDialogOpen(true);
+                            addMessage('bot', 'Please enter your credentials.', 'info');
+                            setIsLoginDialogOpen(true);
+                        } else {
+                            addMessage('bot', 'You are already logged in.', 'error');
                         }
                         break;
                     case 'logout':
-                        // Simulate clicking the logout button
-                        addMessage('bot', 'Action requested: Logging out...', 'info');
-                        handleLogout(); // Call the existing logout handler
+                        // Simulate clicking the "Log Out" button
+                        addMessage('bot', 'Action requested: Logout'); // Default bot gray
+
+                        if (isLoggedIn) {
+                            handleLogout(); // Call the function that does the API call & state update
+                        } else {
+                            addMessage('bot', 'You are already logged out.', 'error');
+                        }
                         break;
                     default:
                         console.warn(`Received unknown OSF Action type: ${action.type}`);
@@ -510,9 +532,8 @@ function App() {
                     yamlContent={yamlContent}
                     onYamlChange={handleYamlChange}
                     isLoggedIn={isLoggedIn}
-                    // Pass lastCommandAction to enable/disable submit button
-                    lastCommandAction={lastCommandAction}
-                    onSubmitYaml={handleSubmitYaml}
+                    lastCommandAction={lastCommandAction} // Still needed to enable button
+                    onSubmitYaml={handleSubmitYaml} // Pass updated handler
                     isSubmittingYaml={isSubmittingYaml}
                 />
             </main>

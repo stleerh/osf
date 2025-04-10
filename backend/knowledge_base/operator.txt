@@ -33,6 +33,3 @@ spec:
   startingCSV: network-observability-operator.v1.8.0
 
 Get the latest version of the operator supported by the OpenShift Container Platform version.
-
-Default namespace for Loki operator: openshift-operators-redhat
-
