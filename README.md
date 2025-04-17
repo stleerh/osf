@@ -1,8 +1,10 @@
 # OpenShift Forward - AI Companion
 
-OpenShift Forward (OSF) is an AI-first application to manage an OpenShift Container Platform (OCP).  Rather than "shift left" or "shift right", we want to "shift forward"!
+OpenShift Forward (OSF) is an AI-first application to manage an OpenShift cluster alongside OpenShift Container Platform (OCP) web console.  Rather than "shift left" or "shift right", we want to "shift forward"!  Note: Support for Kubernetes cluster is limited.
 
-Log into your cluster and give it prompts.  It will create YAMLs for you.  You can edit the YAML to your liking and then apply the changes.  &#x26a0; Beware: This is a prototype only.  **DO NOT USE IN PRODUCTION!**
+&#x26a0; Beware: This is a prototype only.  **DO NOT USE IN PRODUCTION!**
+
+Log into your cluster and give it prompts.  It will create YAMLs for you.  You can edit the YAML to your liking and then apply the changes.  **WARNING:** YAML creation is a work in progress!
 
 ## Demo
 
@@ -13,10 +15,18 @@ Try it live at: [https://kubecloud.site](https://kubecloud.site)
 Environment: This should work on any Linux-based, MacOS, or WSL environment.
 
 Prerequisites:
-- Install Python, pip, npm, and ffmpeg.
 - OpenAI key
 
-1. (Optional) Set up virtual environment
+- Binary copy of [`oc`](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/cli_tools/openshift-cli-oc) (OpenShift/Kubernetes) or [`kubectl`](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/) (Kubernetes only)
+
+1. Install packages
+    ```
+    # Debian environment
+    sudo apt update
+    sudo apt install python3 python3-pip npm ffmpeg docker.io
+    ```
+
+2. (Optional) Set up virtual environment
 
     1.1 Use either Python's venv (or Anaconda).
 
@@ -32,17 +42,34 @@ Prerequisites:
     source pyenv/bin/activate
     ```
 
-2. Install packages
+3. Set up Docker
+
+    - The user running the Flask app must have access to the `docker` command without requiring sudo privileges.
+    ```
+    sudo usermod -aG user docker  # replace user with the actual user
+    # Log out and log back in for it to take effect.
+    ```
+
+    - Copy the binary [`oc`](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/cli_tools/openshift-cli-oc) (OpenShift/Kubernetes) or [`kubectl`](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/) (Kubernetes only) into this directory.  If you are using `kubectl`, change the **Dockerfile** and replace the `COPY` and `RUN` lines with `COPY kubectl /usr/local/bin/kubectl`.
+
+    - Create the Docker container.
+    ```
+    cd docker
+    ./run.sh
+    docker images  # verify container exists
+    ```
+
+4. Install Python packages
 
     ```
-    cd backend
+    cd ../backend
     pip install -r requirements.txt
 
     # if running Python 3.13+
     pip install audioop-lts
     ```
 
-3. Set up OpenAI key and Flask key
+5. Set up OpenAI key and Flask key
 
     Create a file named ".env" in the **backend** directory.  Replace with your keys.  It should contain:
 
@@ -51,7 +78,7 @@ Prerequisites:
     FLASK_SECRET_KEY='<some_random_key>'
     ```
 
-4. Set up frontend
+6. Set up frontend
 
     ```
     cd ..
@@ -91,3 +118,5 @@ Prerequisites:
     Point your browser at: [http://localhost:5173](http://localhost:5173)
 
     Note: If you want to change the ports, take a look at _frontend/vite.config.js_ and _backend/app.py_.
+
+    Happy shifting! &#x1f600;

@@ -1,7 +1,11 @@
 backend/.env
 backend/__pycache__
 backend/faiss_index
+docker/kubectl
+docker/oc
 frontend/dist
 frontend/node_modules
-frontend/package.json
 frontend/package-lock.json
+
+frontend/package.json
+pyenv

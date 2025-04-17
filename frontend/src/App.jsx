@@ -11,7 +11,6 @@ function App() {
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [clusterInfo, setClusterInfo] = useState('');
     const [clusterType, setClusterType] = useState(null);
-    const [lastCommandAction, setLastCommandAction] = useState(null);
     const [isLoginDialogOpen, setIsLoginDialogOpen] = useState(false);
     const [isRecording, setIsRecording] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false); // General lock for API calls (chat, transcribe)
@@ -228,7 +227,6 @@ function App() {
                 setClusterType(data.cluster_type);
                 addMessage('bot', `Successfully logged into ${data.cluster_type} cluster: ${data.cluster_display}`, 'info');
                 setYamlContent(''); // Clear state on successful login
-                setLastCommandAction(null);
                 setIsProcessing(false);
                 return { success: true }; // Return success status
             } else {
@@ -265,7 +263,6 @@ function App() {
                 setClusterInfo('');
                 setClusterType(null);
                 setYamlContent('');
-                setLastCommandAction(null);
                 addMessage('bot', 'Logged out successfully.', 'info');
             } else {
                 addMessage('bot', `Logout failed: ${data.error || 'Unknown error'}`, 'error');
@@ -281,16 +278,13 @@ function App() {
 
     // Submit handler (called by button OR by 'submit' action)
     const handleSubmitYaml = async (yaml) => {
-        // Check conditions: Use lastCommandAction state for intent check internally
-        // The button is only enabled if lastCommandAction is 'apply', so this check implicitly uses it.
-        if (!isLoggedIn || !yaml || !lastCommandAction || isProcessing || isSubmittingYaml) {
-            console.warn("Submit YAML conditions not met inside handler.", {isLoggedIn, yaml: !!yaml, lastCommandAction, isProcessing, isSubmittingYaml});
+        // Check simplified conditions
+        if (!isLoggedIn || !yaml || isProcessing || isSubmittingYaml) {
+            console.warn("Submit YAML conditions not met inside handler.", {isLoggedIn, yaml: !!yaml, isProcessing, isSubmittingYaml});
             addMessage('bot', 'Cannot submit: Conditions not met (check login, YAML, action state).', 'error');
             return;
         }
-
-        // Use the state value 'lastCommandAction' which should be 'apply' if button was enabled
-        const actionToLog = lastCommandAction;
+        addMessage('bot', `Submitting YAML...`, 'info');
         setIsSubmittingYaml(true);
 
         try {
@@ -330,7 +324,6 @@ function App() {
 
         addMessage('user', prompt);
         setIsProcessing(true);
-        setLastCommandAction(null); // Reset action/YAML on new user message
 
         // --- Prepare payload with current YAML ---
         const payload = {
@@ -363,18 +356,14 @@ function App() {
                  setYamlContent(data.yaml); // Update YAML panel if provided
             }
 
-            // Update state needed for submit button enable/disable
-            setLastCommandAction(data.command_action || null);
-
             // --- Process the OSF Action ---
             const action = data.osf_action;
             if (action && action.type) {
                 console.log(`Processing OSF Action: ${action.type}`, action.data || '');
                 switch (action.type) {
-                    case 'oc_apply':
-                    case 'kubectl_apply':
-                        // The main data.reply already informed the user.
-                        // Action handled by enabling the submit button via setLastCommandAction done above.
+                    case 'apply_yaml':
+                        // No frontend state update needed, just informational
+                        // The backend reply might already contain instructions.
                         break;
 
                     case 'submit':
@@ -382,9 +371,7 @@ function App() {
                         addMessage('bot', 'Action requested: Submit YAML to cluster');
 
                         const currentYaml = yamlContent; // Get current state value
-                        const currentAction = lastCommandAction; // Get current state value
-
-                        if (isLoggedIn && currentYaml && currentAction === 'apply') {
+                        if (isLoggedIn && currentYaml) {
                             // Conditions met, proceed to call the submit handler
                             // Message indicates proceeding, handleSubmitYaml will add final status
                             addMessage('bot', 'Proceeding with YAML submission...', 'info');
@@ -421,7 +408,7 @@ function App() {
                             addMessage('bot', 'Please enter your credentials.', 'info');
                             setIsLoginDialogOpen(true);
                         } else {
-                            addMessage('bot', 'You are already logged in.', 'error');
+                            addMessage('bot', 'You\'re already logged in.', 'error');
                         }
                         break;
                     case 'logout':
@@ -431,7 +418,7 @@ function App() {
                         if (isLoggedIn) {
                             handleLogout(); // Call the function that does the API call & state update
                         } else {
-                            addMessage('bot', 'You are already logged out.', 'error');
+                            addMessage('bot', 'You\'re not logged in.', 'error');
                         }
                         break;
                     default:
@@ -443,7 +430,6 @@ function App() {
         } catch (error) {
             console.error('Error sending message:', error);
             addMessage('bot', `Error communicating with assistant: ${error.message}`, 'error');
-            setLastCommandAction(null);
         } finally {
             setIsProcessing(false);
         }
@@ -532,7 +518,6 @@ function App() {
                     yamlContent={yamlContent}
                     onYamlChange={handleYamlChange}
                     isLoggedIn={isLoggedIn}
-                    lastCommandAction={lastCommandAction} // Still needed to enable button
                     onSubmitYaml={handleSubmitYaml} // Pass updated handler
                     isSubmittingYaml={isSubmittingYaml}
                 />

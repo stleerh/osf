@@ -1,8 +1,8 @@
 import React from 'react';
 
-function YamlPanel({ yamlContent, onYamlChange, isLoggedIn, lastCommandAction, onSubmitYaml, isSubmittingYaml }) {
+function YamlPanel({ yamlContent, onYamlChange, isLoggedIn, onSubmitYaml, isSubmittingYaml }) {
     const hasYaml = yamlContent && yamlContent.trim().length > 0;
-    const canSubmit = isLoggedIn && hasYaml && lastCommandAction === 'apply' && !isSubmittingYaml;
+    const canSubmit = isLoggedIn && hasYaml && !isSubmittingYaml;
 
     let submitTitle = "Submit to Cluster";
     if (isSubmittingYaml) {
@@ -11,10 +11,6 @@ function YamlPanel({ yamlContent, onYamlChange, isLoggedIn, lastCommandAction, o
         submitTitle = "Log in to a cluster first";
     } else if (!hasYaml) {
         submitTitle = "YAML panel is empty";
-    } else if (!lastCommandAction) {
-        submitTitle = "Ask the assistant to generate YAML and specify 'apply' or 'create'";
-    } else {
-        submitTitle = `Submit YAML using '${lastCommandAction}' command`;
     }
 
     const handleChange = (event) => {

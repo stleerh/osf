@@ -16,7 +16,7 @@ body {
     border-radius: 8px;
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* Prevent content from spilling */
+    overflow: hidden;
 }
 
 .app-header {
@@ -27,7 +27,7 @@ body {
     background-color: #004080; /* OpenShift-like blue */
     color: white;
     border-bottom: 1px solid #ddd;
-    flex-shrink: 0; /* prevent header from shrinking */
+    flex-shrink: 0; /* Prevent header from shrinking */
 }
 
 .app-header h1 {
@@ -39,6 +39,7 @@ body {
     display: flex;
     align-items: center;
     gap: 15px;
+    flex-shrink: 0; /* Prevent shrinking */
 }
 
 #login-section button {
@@ -59,8 +60,8 @@ body {
 #cluster-status { /* Ensure status doesn't wrap too early */
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis; /* Add ellipsis if it's too long */
-    max-width: 600px; /* Adjust max-width if needed */
+    text-overflow: ellipsis;
+    max-width: 600px;
 }
 
 #cluster-status.logged-in {
@@ -84,7 +85,7 @@ body {
     border-radius: 5px;
     background-color: #ffffff;
     overflow: hidden; /* Ensure children don't overflow panel */
-    /* --- Equal Width for Panels --- */
+    /* Equal Width for Panels */
     flex-basis: 0; /* Start with no intrinsic width */
     flex-grow: 1;  /* Allow both panels to grow equally */
     min-width: 300px; /* Prevent panels from becoming too narrow */
@@ -112,16 +113,22 @@ body {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    /* Ensure wrapping context */
+    overflow-wrap: break-word;
+    word-wrap: break-word;
 }
+
+
+/* --- Message Styling --- */
 
 .message {
     padding: 8px 12px;
     border-radius: 5px;
     max-width: 85%;
     overflow-wrap: break-word;
-    word-wrap: break-word; /* Legacy fallback for overflow-wrap */
-    word-break: break-word; /* Helps break words, can be aggressive, use with overflow-wrap */
-    line-height: 1.4; /* Example line height */
+    word-wrap: break-word;
+    word-break: break-word;
+    line-height: 1.4;
 }
 
 .message.user {
@@ -151,20 +158,6 @@ body {
     text-align: left;
 }
 
-.message.info pre {
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    word-break: break-all;
-    background-color: rgba(0, 0, 0, 0.05);
-    padding: 8px;
-    border-radius: 4px;
-    margin: 6px 0;
-    overflow-x: auto;
-    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
-    font-size: 0.9em;
-    text-align: left;
-}
-
 .message strong {
     display: block;
     margin-bottom: 4px;
@@ -172,26 +165,52 @@ body {
 }
 
 .message p {
-    margin: 0;
-    overflow-wrap: break-word;
-    word-wrap: break-word;
-    word-break: break-word;
+    margin: 0; /* Remove default paragraph margins */
 }
 
-/* Style for the strong tag (Sender Name) */
-.message strong {
-    display: block;
-    margin-bottom: 4px;
-    font-size: 0.9em;
+/* Container for message text/html after sender */
+.message > div {
+    width: 100%;
 }
+
+/* Container for dangerouslySetInnerHTML */
+.message div > div[dangerouslySetInnerHTML] {
+   margin-top: 0;
+   width: 100%;
+}
+
+/* Preformatted text (error details, code blocks) */
+.message pre {
+    white-space: pre-wrap;   /* Crucial: Preserve whitespace AND wrap lines */
+    overflow-wrap: break-word; /* Allow long words/strings to break */
+    word-wrap: break-word;     /* Fallback */
+    /* word-break: break-all; */ /* Use only if the above fail for specific edge cases */
+
+    /* Visual styling */
+    background-color: rgba(0, 0, 0, 0.05);
+    padding: 8px;
+    border-radius: 4px;
+    margin: 6px 0;
+    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', 'Source Code Pro', 'Fira Code', monospace;
+    font-size: 0.9em;
+    text-align: left;
+
+    display: block;
+    max-width: 100%; /* Prevent expanding past container */
+    overflow-x: auto; /* Fallback: Add horizontal scrollbar if wrapping fails */
+    box-sizing: border-box;
+}
+
+
+/* --- Input Area Styling --- */
 
 .input-area {
     display: flex;
     padding: 10px;
     border-top: 1px solid #ccc;
-    align-items: flex-end; /* Align items to the bottom for better look with icons */
-    gap: 8px; /* Add space between textarea and button stack */
-    flex-shrink: 0; /* prevent header from shrinking */
+    align-items: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
 }
 
 #user-input {
@@ -211,14 +230,12 @@ body {
     border-color: #004080;
 }
 
-/* Styles for the vertical button container */
 .button-stack {
     display: flex;
-    flex-direction: column; /* Stack items vertically */
-    gap: 4px; /* Space between the buttons */
+    flex-direction: column;
+    gap: 4px;
 }
 
-/* Styles for individual buttons in the stack */
 .button-stack button {
     padding: 8px 10px;
     border: 1px solid #ccc;
@@ -226,13 +243,13 @@ body {
     cursor: pointer;
     transition: background-color 0.2s;
     border-radius: 4px;
-    display: flex; /* Center icon */
+    display: flex;
     justify-content: center;
     align-items: center;
-    width: 40px; /* Make buttons square-ish */
+    width: 40px;
     height: 40px;
     box-sizing: border-box;
-    font-size: 1.1em; /* Slightly larger icon */
+    font-size: 1.1em;
 }
 
 .button-stack button:hover {
@@ -253,6 +270,8 @@ body {
 }
 
 
+/* --- YAML Panel Styling --- */
+
 #yaml-panel {
     flex-grow: 1;
     font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', 'Source Code Pro', 'Fira Code', monospace;
@@ -265,6 +284,8 @@ body {
     line-height: 1.4;
     background-color: #fdfdfd;
     color: #333;
+    height: 100%; /* Fill scrollable container */
+    box-sizing: border-box;
 }
 
 #submit-button {
@@ -277,7 +298,7 @@ body {
     cursor: pointer;
     transition: background-color 0.2s;
     align-self: center;
-    flex-shrink: 0; /* prevent header from shrinking */
+    flex-shrink: 0;
 }
 
 #submit-button:hover {
@@ -289,7 +310,7 @@ body {
 }
 
 
-/* Login Dialog Styles */
+/* --- Login Dialog Styles --- */
 dialog {
     border: 1px solid #ccc;
     border-radius: 8px;
@@ -316,7 +337,6 @@ dialog::backdrop {
     font-weight: bold;
 }
 
-/* Style radio button labels */
 #login-form input[type="radio"] + label {
     display: inline-block;
     margin-right: 15px;
@@ -339,7 +359,6 @@ dialog::backdrop {
     color: #666;
     margin-top: 5px;
 }
-
 
 .dialog-buttons {
     margin-top: 1.5em;
@@ -364,9 +383,12 @@ dialog::backdrop {
     color: #333;
 }
 
+/* Consistent error message style */
 .error-message {
     color: #dc3545; /* Red */
     font-size: 0.9em;
     margin-top: 10px;
     min-height: 1.2em; /* Reserve space */
+    overflow-wrap: break-word;
+    word-wrap: break-word;
 }
