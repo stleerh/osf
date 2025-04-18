@@ -1,6 +1,8 @@
 Flask
 Flask-Cors
 docker
+jq
+kubernetes
 python-dotenv
 openai
 pydub
@@ -8,8 +10,10 @@ pyyaml
 requests
 # --- Add RAG Dependencies ---
 langchain
+langchain-ollama
 langchain-openai
 langchain-community # For loaders/splitters if needed beyond core
+#langchain-ibm # for Granite
 faiss-cpu # Or faiss-gpu if you have CUDA setup
 tiktoken # Required by langchain for token counting
 # Optional: Add loaders for specific file types if needed

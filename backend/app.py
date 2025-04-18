@@ -1,36 +1,41 @@
-import atexit
 import io
 import os
 import re
+import requests # Needed for checking Ollama server reachability
 import shlex
-import shutil
-import subprocess
 import sys
-import time
-import uuid
-import yaml
-from urllib.parse import urlparse, urlunparse
+import yaml # Still needed for YAML parsing in /submit route
+
+from urllib.parse import urlparse, urlunparse # Needed in /login route
 
 import docker
 from docker.errors import APIError, NotFound, ImageNotFound
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
-from flask_cors import CORS # Import CORS
-from dotenv import load_dotenv
+from flask_cors import CORS
+
+# --- Kubernetes client imports ---
+from kubernetes import config
+from kubernetes import client
+
 from openai import OpenAI
+from dotenv import load_dotenv
 from pydub import AudioSegment
 
-# --- RAG Imports ---
+# --- LangChain/LLM Imports ---
 from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama # Assuming you updated this
+# from langchain_ibm import ChatWatsonx # Placeholder
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
-# --- End RAG Imports ---
+# --- End LangChain/LLM Imports ---
 
 # --- Local Imports ---
 from audio import speech_to_text
 from rag_setup import load_or_build_vector_store
 from prompt import SYSTEM_PROMPT, RAG_TASK_SYSTEM_INSTRUCTION
+from helper_functions import run_in_container
 # --- End Local Imports ---
 
 
@@ -40,13 +45,21 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'mysecret')
 CORS(app, supports_credentials=True, origins=["http://localhost:5173", "http://127.0.0.1:5173"]) # Adjust port if needed
 
-#llm_model = 'gpt-3.5-turbo'
-llm_model = 'gpt-4.1-mini'
-#llm_model = 'o3-mini'
+# --- Default LLM Configuration ---
+DEFAULT_PROVIDER = 'openai'
+DEFAULT_OPENAI_MODEL = 'gpt-4o-mini' # Changed default
+# DEFAULT_OLLAMA_MODEL = 'llama3:8b' # Example if Ollama is default
+# DEFAULT_IBM_MODEL = 'ibm/granite-13b-chat-v2' # Example
+
+# --- Environment Variable Configuration ---
+OLLAMA_BASE_URL = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
+# IBM_API_KEY = os.environ.get('IBM_API_KEY') # Add if using IBM
+# IBM_ENDPOINT = os.environ.get('IBM_ENDPOINT', 'https://us-south.ml.cloud.ibm.com') # Add if using IBM
+
 temperature = 0
 enable_rag = True
 
-ACTION_MARKER = "~OSF_ACTION:" # Define the marker
+ACTION_MARKER = "/OSF_ACTION:" # Define the marker
 CLI_DOCKER_IMAGE = 'oc-image:latest'
 TEMP_KUBECONFIG_DIR = "/tmp/temp_kube_configs"
 
@@ -54,44 +67,23 @@ TEMP_KUBECONFIG_DIR = "/tmp/temp_kube_configs"
 # --- Initialize OpenAI Client and LLM ---
 try:
     openai_client = OpenAI()
-    if llm_model != 'o3-mini':
-        print(f"Initializing ChatOpenAI with model='{llm_model}', temperature={temperature}")
-        llm = ChatOpenAI(model=llm_model, temperature=temperature)
-    else:
-        print(f"Initializing ChatOpenAI with model='{llm_model}' (temperature omitted)")
-        llm = ChatOpenAI(model=llm_model)
 except Exception as e:
-    print(f"Error initializing OpenAI client or Langchain Chat Model: {e}")
+    print(f"Error initializing OpenAI client: {e}")
     openai_client = None
-    llm = None
 
- # --- RAG Setup (Conditional) ---
+# --- RAG Setup (Conditional & uses default LLM initially) ---
+# Note: RAG chain creation now happens *inside* /chat based on selected LLM
 vector_store = None
 retriever = None
-rag_chain = None
-
 if enable_rag:
     print("Initializing RAG...")
     vector_store = load_or_build_vector_store()
-    if vector_store and llm:
+    if vector_store:
         retriever = vector_store.as_retriever(search_kwargs={"k": 3}) # Retrieve top 3 docs
         print("RAG retriever initialized.")
-
-        rag_prompt = ChatPromptTemplate.from_messages([
-            ("system", RAG_TASK_SYSTEM_INSTRUCTION),
-            ("human", "Context:\n{context}\n\nQuestion: {input}\n\nAnswer:")
-        ])
-
-        # Chain to combine documents into the prompt context
-        question_answer_chain = create_stuff_documents_chain(llm, rag_prompt)
-        # Chain that retrieves documents, then passes them to the question_answer_chain
-        rag_chain = create_retrieval_chain(retriever, question_answer_chain)
-        print("Langchain RAG chain created.")
-
     else:
-        print("WARNING: RAG vector store failed to initialize. Falling back to non-RAG mode.")
-        retriever = None
-        rag_chain = None
+        print("WARNING: RAG vector store failed to initialize. RAG disabled.")
+        enable_rag = False # Disable RAG if store fails
 else:
     print("RAG is DISABLED by configuration.")
 # --- End RAG Setup ---
@@ -107,31 +99,14 @@ try:
          print(f"Docker image '{CLI_DOCKER_IMAGE}' found.")
          os.makedirs(TEMP_KUBECONFIG_DIR, exist_ok=True) # Ensure temp dir exists
     except ImageNotFound:
-        # Exit if the required image is missing - fundamental requirement
         print(f"CRITICAL ERROR: Docker image '{CLI_DOCKER_IMAGE}' not found.")
-        print("Please build or pull the image. Exiting.")
         sys.exit(1) # Exit the application
     except APIError as e:
         print(f"CRITICAL ERROR: Docker API error during image check: {e}. Is Docker running?")
         sys.exit(1) # Exit the application
 except Exception as e:
-    # Exit if Docker client cannot be initialized at all
     print(f"CRITICAL ERROR: Failed to initialize Docker client: {e}")
-    print("Ensure Docker is installed, running, and permissions are correct. Exiting.")
     sys.exit(1) # Exit the application
-
-
-# --- Cleanup Temporary Kubeconfigs ---
-def cleanup_temp_configs():
-     if os.path.exists(TEMP_KUBECONFIG_DIR):
-          print(f"Cleaning up temporary kubeconfig directory: {TEMP_KUBECONFIG_DIR}")
-          try:
-              shutil.rmtree(TEMP_KUBECONFIG_DIR)
-          except OSError as e:
-              print(f"Error removing temp directory {TEMP_KUBECONFIG_DIR}: {e}")
-
-# Run cleanup when the application exits
-atexit.register(cleanup_temp_configs)
 
 
 # --- Helper Functions ---
@@ -165,6 +140,7 @@ def parse_osf_action(text):
     """
     action_line = None
     # Find the last non-empty line
+    print('RAW TEXT:\n', text)
     lines = text.strip().split('\n')
     for line in reversed(lines):
         stripped_line = line.strip()
@@ -174,7 +150,7 @@ def parse_osf_action(text):
             break # Found the last non-empty line, stop searching
 
     if not action_line:
-        print("No '*OSF_ACTION:' line found at the end.")
+        print(f"No '{ACTION_MARKER}' line found at the end.")
         return None, None
 
     action_content_raw = action_line[len(ACTION_MARKER):].strip()
@@ -207,310 +183,37 @@ def remove_osf_action_line(text):
         return "\n".join(lines[:-1]).strip()
     return text.strip()
 
-
-def run_in_container(command_input, input_data=None, session_auth=None, timeout=60, environment_vars=None, command_is_string=False):
-    """
-    Runs a command inside a Docker container using user-specific auth from session
-    OR provided environment variables (e.g., for login). Handles input data.
-    Assumes container ENTRYPOINT is ["/bin/bash", "-c"].
-
-    Args:
-        command_input (list or str): Command to execute. List for actions like apply/create,
-                                     string for pre-constructed commands like OC login.
-        input_data (str, optional): Data to be piped as input (e.g., YAML). Mounts as file.
-        session_auth (dict, optional): User's auth info from Flask session.
-        timeout (int, optional): Timeout in seconds for container execution. Defaults to 60.
-        environment_vars (dict, optional): Environment variables to set inside the container.
-                                           Used primarily for OpenShift password login.
-        command_is_string (bool, optional): Deprecated/Ignored. Logic now relies on type of command_input.
-
-    Returns:
-        tuple: (success: bool, output: str)
-               Output contains combined stdout/stderr on success,
-               or prioritized stderr/error message on failure.
-    """
-    # --- Input Validation ---
-    if not command_input:
-         return False, "No command provided to run_in_container."
-    if not isinstance(command_input, (list, str)):
-         return False, "command_input must be a list or a string."
-    if environment_vars and not isinstance(environment_vars, dict):
-         return False, "Invalid environment_vars provided (must be dict)."
-    if session_auth and not isinstance(session_auth, dict):
-         return False, "Invalid session_auth provided (must be dict)."
-
-    # Check authentication source if session_auth is required by the flow
-    # Note: /login call provides environment_vars but no session_auth
-    # Note: /submit call provides session_auth but no environment_vars
-
-    # --- Variable Initialization ---
-    container_name = f"osf-cli-{uuid.uuid4().hex[:12]}"
-    volumes = {}
-    environment = environment_vars if environment_vars is not None else {}
-    container_kubeconfig_path = "/root/.kube/config" # Standard path in container
-    temp_kubeconfig_filename = None # Track kubeconfig file for deletion
-    temp_input_filename = None      # Track input file for deletion
-    final_command_string = None     # The single string command for bash -c
-    current_command_list = None     # Holds the command if input was a list
-
+def get_llm_instance(provider, model_name):
+    """Initializes and returns the Langchain LLM instance."""
+    print(f"Attempting to initialize LLM: Provider='{provider}', Model='{model_name}'")
     try:
-        # --- Determine Initial Command Structure ---
-        # Define current_command_list or final_command_string based on input type
-        if isinstance(command_input, list):
-            current_command_list = list(command_input) # Work with a copy
-            # final_command_string remains None for now, will be built later
-        elif isinstance(command_input, str):
-             # Input is a string (e.g., from /login), use it directly
-             final_command_string = command_input
-             # current_command_list remains None
-        # No else needed due to initial validation
-
-        # --- Prepare Input Data File Mount (if input_data provided) ---
-        container_input_path = None
-        if input_data:
-             temp_input_filename = os.path.join(TEMP_KUBECONFIG_DIR, f"input_{uuid.uuid4().hex}.yaml")
-             try:
-                 with open(temp_input_filename, 'w') as f: f.write(input_data)
-             except Exception as e:
-                 return False, f"Failed to write temporary input file: {e}"
-
-             container_input_path = "/tmp/input.yaml" # Standard path inside container
-             volumes[temp_input_filename] = {'bind': container_input_path, 'mode': 'ro'}
-
-             # Modify the command LIST or STRING to use the file path
-             if current_command_list: # Modify the list if input was a list
-                 try:
-                     f_index = -1
-                     for i, arg in enumerate(current_command_list):
-                          if (arg == "-f" or arg == "--filename") and i + 1 < len(current_command_list) and current_command_list[i+1] == '-':
-                               f_index = i
-                               break
-                     if f_index != -1:
-                         current_command_list[f_index + 1] = container_input_path # Modify the list
-                         print(f"Modified command list to use input file: {current_command_list}")
-                     else:
-                         print(f"Warning: Command list {current_command_list} does not use '-f -', cannot auto-inject input file path.")
-                 except Exception as e:
-                      return False, f"Failed to modify command list for input file: {e}"
-
-             elif final_command_string: # Modify the string if input was a string
-                 if " -f - " in final_command_string:
-                      # Use shlex.quote for the path within the string replacement
-                      final_command_string = final_command_string.replace(" -f - ", f" -f {shlex.quote(container_input_path)} ", 1)
-                      print(f"Modified command string to use mounted input file.")
-                 else:
-                      print(f"Warning: Could not find ' -f - ' in command string for input data: {final_command_string}")
-
-
-        # --- Configure Auth based on session_auth (if provided - typically for actions like /submit) ---
-        if session_auth:
-            cluster_type = session_auth.get('cluster_type')
-            if cluster_type == 'kubernetes':
-                # Handle Kubernetes: Mount temporary kubeconfig
-                context = session_auth.get('cluster_context')
-                if not context:
-                    return False, "Kubernetes context missing from session auth."
-                try:
-                    temp_kubeconfig_filename = os.path.join(TEMP_KUBECONFIG_DIR, f"kubeconfig_{uuid.uuid4().hex}")
-                    # --- TODO: Implement actual logic to build temp Kubeconfig ---
-                    # This needs to load the host config, find the specified context,
-                    # extract cluster+user details, and write a minimal config file.
-                    # Placeholder content:
-                    temp_kubeconfig_dict = {'current-context': context, 'contexts': [], 'clusters': [], 'users': []}
-                    print("WARNING: Using placeholder Kubeconfig content. Implement real extraction.")
-                    # --- End TODO ---
-                    with open(temp_kubeconfig_filename, 'w') as f: yaml.dump(temp_kubeconfig_dict, f)
-                    volumes[temp_kubeconfig_filename] = {'bind': container_kubeconfig_path, 'mode': 'ro'}
-                    print(f"Prepared temporary kubeconfig for context '{context}' at {temp_kubeconfig_filename}")
-                    # The command list (current_command_list) itself doesn't need modification here
-                except Exception as e:
-                    print(f"Error preparing temporary kubeconfig: {e}")
-                    traceback.print_exc() # Print stack trace for debugging
-                    return False, f"Error preparing kubeconfig: {e}"
-
-            elif session_auth['cluster_type'] == 'openshift':
-                # Handle OpenShift Actions: Inject auth flags into the command list
-                if not current_command_list:
-                     # This path requires the command to have been passed as a list (e.g., from /submit)
-                     return False, "Internal error: Expected command list for OpenShift action, but received string or invalid input."
-
-                token = session_auth.get('oc_token')
-                server = session_auth.get('oc_server')
-                skip_tls = session_auth.get('oc_skip_tls', False)
-                if not token or not server:
-                    return False, "OpenShift token/server missing from session for action."
-
-                action_cmd_list = list(current_command_list) # Work with a copy
-
-                # Prepare flags to insert (insert after 'oc' at index 1)
-                auth_flags_to_insert = []
-                auth_flags_to_insert.append(f"--server={server}")
-                auth_flags_to_insert.append(f"--token={token}")
-                if skip_tls:
-                    auth_flags_to_insert.append("--insecure-skip-tls-verify=true")
-
-                # Insert flags after 'oc'
-                if len(action_cmd_list) > 0 and action_cmd_list[0] == 'oc':
-                    action_cmd_list[1:1] = auth_flags_to_insert # Insert flags at index 1
-                    # Construct the final command string ONLY from this modified action list
-                    final_command_string = " ".join(shlex.quote(arg) for arg in action_cmd_list)
-                else:
-                    return False, f"Invalid OpenShift command list format (expected 'oc' first): {action_cmd_list}"
-
-
-        # --- Final Command String Construction (if not already set) ---
-        # This covers cases like K8s commands, or commands without session_auth
-        if final_command_string is None:
-            if current_command_list:
-                # Join the list (potentially modified by input file path) into the string
-                final_command_string = " ".join(shlex.quote(arg) for arg in current_command_list)
-            else:
-                # Should be unreachable if initial validation and logic are correct
-                return False, "Internal error: final command string could not be determined."
-
-        # --- Final Check: Ensure final_command_string is set ---
-        if not final_command_string:
-             return False, "Internal error: final command string is empty or not set before execution."
-
-        # --- Run the Container ---
-        executable_type = "bash" if isinstance(command_input, str) else (current_command_list[0] if current_command_list else "unknown")
-        print(f"run_in_container executing: Type='{executable_type}'") # Log type being run
-        print(f"Executing final command string via bash -c: '{final_command_string}'") # Log the exact string
-        if volumes:
-            print(f"Volumes mapped: {list(volumes.keys())}")
-        if environment:
-            print(f"Environment Variables set: {list(environment.keys())}")
-
-        start_time = time.time()
-        container = None
-        combined_logs = ""
-        stdout_log = ""
-        stderr_log = ""
-        exit_code = -1
-
-        try:
-            # Run container and wait for completion
-            # Pass the final_command_string INSIDE A SINGLE-ELEMENT LIST
-            # to work correctly with ENTRYPOINT ["/bin/bash", "-c"]
-            container = docker_client.containers.run(
-                image=CLI_DOCKER_IMAGE,
-                command=[final_command_string], # *** WRAP FINAL STRING IN LIST ***
-                volumes=volumes,
-                environment=environment,
-                remove=False,      # Keep container after exit to retrieve logs
-                detach=True,       # Start detached
-                name=container_name,
-                stdout=True,
-                stderr=True
-            )
-
-            # Wait for container completion FIRST
-            result = container.wait(timeout=timeout)
-            exit_code = result.get('StatusCode', -1)
-
-            # Get COMBINED logs first as the primary source
-            try:
-                combined_logs = container.logs(stdout=True, stderr=True).decode('utf-8', errors='ignore').strip()
-            except Exception as log_err:
-                print(f"Error getting combined logs: {log_err}")
-                combined_logs = f"Error retrieving logs: {log_err}" # Store error as output
-
-            # Attempt to get separate streams as fallback/debug info
-            try:
-                stdout_log = container.logs(stdout=True, stderr=False).decode('utf-8', errors='ignore').strip()
-            except Exception: pass # Ignore error, combined_logs is primary
-
-            try:
-                stderr_log = container.logs(stdout=False, stderr=True).decode('utf-8', errors='ignore').strip()
-            except Exception: pass # Ignore error, combined_logs is primary
-
-            # Determine the output to return based on exit code
-            output_for_processing = combined_logs if exit_code == 0 else (stderr_log or combined_logs) # Prioritize stderr on failure
-
-        except docker.errors.ContainerError as ce:
-             print(f"Docker ContainerError: ExitCode={ce.exit_status}, Cmd={ce.command}, Image={ce.image}, Err={ce.stderr}")
-             exit_code = ce.exit_status
-             stderr_log = ce.stderr.decode('utf-8', errors='ignore').strip() if ce.stderr else str(ce)
-             # Try to get combined logs even on ContainerError
-             try:
-                 if container:
-                     combined_logs = container.logs(stdout=True, stderr=True).decode('utf-8', errors='ignore').strip()
-                     print(f"DEBUG Combined Logs on ContainerError:\n--- START LOGS ---\n{combined_logs}\n--- END LOGS ---")
-                     output_for_processing = stderr_log or combined_logs # Prioritize stderr from exception
-                 else:
-                      output_for_processing = stderr_log or f"ContainerError: {ce}"
-             except Exception:
-                  output_for_processing = stderr_log or f"ContainerError: {ce}" # Fallback
-
-        finally:
-             # Ensure container is removed
-             if container:
-                 try:
-                     container.remove(force=True)
-                     # print(f"Container '{container_name}' removed.") # Optional success log
-                 except NotFound:
-                     pass # Container already gone or failed to start
-                 except APIError as e_rem:
-                     print(f"Error removing container '{container_name}': {e_rem}")
-
-        elapsed_time = time.time() - start_time
-        print(f"Container '{container_name}' finished. Exit code: {exit_code}. Time: {elapsed_time:.2f}s")
-        if stdout_log and exit_code != 0:
-            print(f"Container Stdout (on error): {stdout_log[:200]}{'...' if len(stdout_log)>200 else ''}")
-        if stderr_log:
-            print(f"Container Stderr: {stderr_log[:200]}{'...' if len(stderr_log)>200 else ''}")
-
-        # --- Process Results ---
-        if exit_code == 0:
-            # Return the combined logs for successful execution
-            return True, output_for_processing
+        if provider == 'openai':
+            # Use default API key from environment
+            return ChatOpenAI(model=model_name, temperature=temperature)
+        elif provider == 'ollama':
+            print(f"Initializing ChatOllama with base_url='{OLLAMA_BASE_URL}'") # Add debug
+            return ChatOllama(model=model_name, base_url=OLLAMA_BASE_URL, temperature=temperature)
+        elif provider == 'ibm_granite':
+             # Placeholder - requires langchain-ibm and credentials
+             print("WARNING: IBM Granite provider selected but not fully implemented.")
+             # Example initialization (replace with actual class and params)
+             # if not IBM_API_KEY: raise ValueError("IBM_API_KEY not configured")
+             # return ChatWatsonx(
+             #     model_id=model_name,
+             #     credentials={"apikey": IBM_API_KEY},
+             #     project_id=os.environ.get("IBM_PROJECT_ID"), # Often needed
+             #     url=IBM_ENDPOINT
+             # )
+             raise NotImplementedError("IBM Granite provider not implemented yet.")
         else:
-            # Command failed, return the prioritized error output
-            error_message = output_for_processing or f"Container exited with code {exit_code} but no output captured."
-
-            # Special handling for "AlreadyExists" on 'create' commands
-            # Check the *original* command_input type and content
-            original_verb = None
-            original_executable = "unknown"
-            if isinstance(command_input, list) and len(command_input) > 0:
-                 original_executable = command_input[0]
-                 if len(command_input) > 1:
-                      original_verb = command_input[1]
-            # Cannot reliably determine verb from original string input easily
-
-            if original_executable in ['oc', 'kubectl'] and original_verb == 'create' and "AlreadyExists" in error_message:
-                 print(f"Info: '{original_executable} create' reported 'AlreadyExists'. Treating as success.")
-                 # Return success=True, but with a specific message, not the raw logs
-                 return True, f"{original_executable.capitalize()} resource already exists (ignored)."
-            else:
-                # Return failure with the captured error message
-                return False, error_message.strip()
-
-    # --- Exception Handling for Docker/Setup issues ---
-    except docker.errors.ImageNotFound as e:
-         print(f"CRITICAL Docker ImageNotFound error: {e}")
-         return False, f"Required Docker image '{CLI_DOCKER_IMAGE}' not found: {e}"
-    except docker.errors.APIError as e:
-        print(f"CRITICAL Docker API Error: {e}")
-        if "permission denied" in str(e).lower():
-             return False, f"Docker API permission error: Ensure the user running the backend has permissions for the Docker socket. Details: {e}"
-        return False, f"Docker API error: {e}"
+            raise ValueError(f"Unsupported LLM provider: {provider}")
+    except ImportError as e:
+         print(f"ERROR: Missing dependency for provider '{provider}'. {e}")
+         raise ValueError(f"Dependencies missing for provider '{provider}'. Please install.") from e
     except Exception as e:
-        print(f"Unexpected Error in run_in_container: {e}")
-        traceback.print_exc() # Log full stack trace for unexpected errors
-        return False, f"Unexpected error during container execution: {e}"
-    finally:
-        # --- Final Cleanup of Temporary Files ---
-        if temp_kubeconfig_filename and os.path.exists(temp_kubeconfig_filename):
-             try:
-                 os.remove(temp_kubeconfig_filename)
-                 # print(f"Deleted temp kubeconfig: {temp_kubeconfig_filename}")
-             except OSError as e_del: print(f"Error deleting temp kubeconfig {temp_kubeconfig_filename}: {e_del}")
-        if temp_input_filename and os.path.exists(temp_input_filename):
-             try:
-                 os.remove(temp_input_filename)
-                 # print(f"Deleted temp input file: {temp_input_filename}")
-             except OSError as e_del: print(f"Error deleting temp input file {temp_input_filename}: {e_del}")
+        print(f"ERROR: Failed to initialize LLM for Provider='{provider}', Model='{model_name}'. Error: {e}")
+        # Optionally raise the error or return None / fallback
+        raise ValueError(f"Failed to initialize LLM {provider}:{model_name}") from e
 
 
 # --- Routes ---
@@ -539,17 +242,84 @@ def check_login():
     else:
         return jsonify({"isLoggedIn": False})
 
+@app.route('/available_models', methods=['GET'])
+def get_available_models():
+    ollama_models = []
+    ollama_error = None
+    try:
+        # Check if Ollama server is reachable first
+        response = requests.get(OLLAMA_BASE_URL, timeout=3) # Quick check
+        response.raise_for_status() # Raise exception for bad status codes
+
+        # Use the Ollama library if installed, or fallback to requests
+        try:
+            import ollama
+            client = ollama.Client(host=OLLAMA_BASE_URL)
+            models_info = client.list().get('models', [])
+            ollama_models = sorted([m['model'] for m in models_info])
+            print(f"Fetched {len(ollama_models)} models from Ollama.")
+        except ImportError:
+             print("Ollama library not installed, using direct HTTP request to /api/tags.")
+             api_tags_url = f"{OLLAMA_BASE_URL.rstrip('/')}/api/tags"
+             response_tags = requests.get(api_tags_url, timeout=10)
+             response_tags.raise_for_status()
+             models_info = response_tags.json().get('models', [])
+             ollama_models = sorted([m['name'] for m in models_info])
+             print(f"Fetched {len(ollama_models)} models via HTTP.")
+        except Exception as e:
+            print(f"Error fetching models from Ollama API: {e}")
+            ollama_error = f"Error connecting to Ollama API: {e}"
+
+    except requests.exceptions.RequestException as e:
+        print(f"Ollama server at {OLLAMA_BASE_URL} not reachable: {e}")
+        ollama_error = f"Ollama server ({OLLAMA_BASE_URL}) not reachable."
+    except Exception as e:
+        print(f"Unexpected error checking Ollama: {e}")
+        ollama_error = f"Unexpected error checking Ollama: {e}"
+
+
+    # Predefined lists (customize as needed)
+    openai_models = ['o4-mini', 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-3.5-turbo'] # Add more if desired
+    ibm_granite_models = ['ibm/granite-13b-chat-v2'] # Placeholder
+
+    return jsonify({
+        'openai': openai_models,
+        'ollama': {'models': ollama_models, 'error': ollama_error},
+        'ibm_granite': ibm_granite_models # Keep placeholder structure
+    })
+
 @app.route('/chat', methods=['POST'])
 def chat():
-    if not openai_client or not llm: # Check both clients
-         return jsonify({"error": "OpenAI client or LLM not initialized."}), 500
-
     data = request.json
     user_prompt = data.get('prompt')
     current_yaml_from_user = data.get('current_yaml')
+    provider = data.get('provider', DEFAULT_PROVIDER)
+    model_name = data.get('model') # Get specific model
+
+    # Set default model if none provided for the selected provider
+    if not model_name:
+        if provider == 'openai':
+            model_name = DEFAULT_OPENAI_MODEL
+        # Add defaults for other providers if needed
+        # elif provider == 'ollama': model_name = DEFAULT_OLLAMA_MODEL
+        else:
+            # Attempt to get first available if none specified (e.g., for Ollama)
+            # This part can be complex, stick to explicit selection or predefined default for now
+            return jsonify({"error": f"No model specified for provider '{provider}' and no default set."}), 400
+
+    print(f"Chat request received: Provider='{provider}', Model='{model_name}'")
 
     if not user_prompt:
         return jsonify({"error": "No prompt provided"}), 400
+
+    # --- Initialize the selected LLM ---
+    try:
+        llm = get_llm_instance(provider, model_name)
+    except (ValueError, NotImplementedError) as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e: # Catch other init errors
+        print(f"Unhandled error during LLM initialization: {e}")
+        return jsonify({"error": f"Failed to initialize LLM: {e}"}), 500
 
     # --- Session History (Optional with RAG, but can provide context for follow-ups) ---
     # Decide if you want to include chat history in the RAG chain input.
@@ -581,39 +351,35 @@ def chat():
 
     try:
         # --- Use RAG only if enabled rag_chain was successfully created ---
-        if enable_rag and rag_chain:
-            print(f"Invoking RAG chain with model {llm_model}...")
+        if enable_rag and retriever and llm:
+            print(f"Invoking RAG chain with: Provider='{provider}', Model='{model_name}'...")
+            # Create the RAG chain *dynamically* using the selected LLM
+            rag_prompt = ChatPromptTemplate.from_messages([
+                ("system", RAG_TASK_SYSTEM_INSTRUCTION),
+                ("human", "Context:\n{context}\n\nQuestion: {input}\n\nAnswer:")
+            ])
+            question_answer_chain = create_stuff_documents_chain(llm, rag_prompt)
+            rag_chain = create_retrieval_chain(retriever, question_answer_chain)
+
             response = rag_chain.invoke({"input": combined_input})
             bot_reply_full = response.get("answer", "Sorry, I couldn't generate an answer using the available documents.").strip()
             print(f"RAG chain response received.")
 
         # --- Fallback to Non-RAG (if RAG failed or isn't setup) ---
         else:
-            print(f"Using direct LLM call with model {llm_model}...")
-            # Construct non_rag_messages including SYSTEM_PROMPT and combined_input potentially split
-            # This part needs careful construction if combined_input is long
-            non_rag_messages = session['conversation'] # includes system + user text prompt
-            # Append the current YAML as a separate user message *for this call only*
+            print(f"Using direct LLM call with: Provider='{provider}', Model='{model_name}'...")
+            # Construct messages for direct call
+            direct_messages = session['conversation'] # includes system + user text prompt
             if current_yaml_from_user and current_yaml_from_user.strip():
-                non_rag_messages.append({"role": "user", "content": f"[User is currently viewing/editing this YAML]:\n```yaml\n{current_yaml_from_user}\n```"})
+                 direct_messages.append({"role": "user", "content": f"[User is currently viewing/editing this YAML]:\n```yaml\n{current_yaml_from_user}\n```"})
+            if len(direct_messages) > 0 and direct_messages[0]["role"] != "system":
+                direct_messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
-            # Ensure system prompt is present
-            if len(non_rag_messages) > 0 and non_rag_messages[0]["role"] != "system":
-                non_rag_messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
-
-            common_params = {
-                "model": llm_model,
-                "messages": non_rag_messages
-            }
-            print("non:", non_rag_messages)
-            if llm_model != 'o3-mini':
-                common_params["temperature"] = temperature
-
-            response = openai_client.chat.completions.create(**common_params)
-            bot_reply_full = response.choices[0].message.content.strip()
+            # Use the Langchain LLM instance directly
+            ai_message = llm.invoke(direct_messages)
+            bot_reply_full = ai_message.content.strip()
             print(f"Direct LLM response received.")
         # --- End RAG / LLM Call ---
-        #print(f"Response:\n{bot_reply_full}") # debugging
 
 
         # --- Process Reply ---
@@ -663,7 +429,6 @@ def chat():
         # --- Store Action Details ---
         session['last_osf_action_type'] = action_type
         session['last_osf_action_data'] = action_data
-        command_action = "apply" if action_type in ["oc_apply", "kubectl_apply"] else None
         session.modified = True
 
         # --- Prepare JSON Response ---
@@ -681,13 +446,13 @@ def chat():
         print(f"Reply Text: {final_reply_for_chat[:100]}...")
         print(f"Extracted YAML: {'Present' if yaml_for_panel else 'None'}")
         print(f"OSF Action: Type='{action_type}', Data='{action_data}'")
-        print(f"Derived command_action (for submit): '{command_action}'")
 
         return jsonify(response_payload)
 
     except Exception as e:
         print(f"Error during chat processing: {e}")
-        return jsonify({"error": f"LLM or RAG processing error: {e}"}), 500
+        error_msg = f"LLM ({provider}:{model_name}) or RAG processing error: {e}"
+        return jsonify({"error": error_msg}), 500
 
 
 @app.route('/transcribe', methods=['POST'])
@@ -754,6 +519,7 @@ def login():
         environment_vars = {"LOGIN_PASSWORD": password}
 
         login_token_success, result_output = run_in_container(
+            docker_client=docker_client,
             command_input=login_and_token_cmd_str,
             command_is_string=True, # This tells run_in_container it's a string
             session_auth=None,
@@ -1020,7 +786,7 @@ def submit_yaml():
     # --- Execute in Container ---
     print(f"Attempting to run '{tool} {final_action_verb}' in container for {cluster_type}...")
     # Pass the command, the YAML data, and the specific auth details
-    success, output = run_in_container(command, input_data=yaml_content, session_auth=auth_info_for_container)
+    success, output = run_in_container(docker_client, command, yaml_content, auth_info_for_container)
 
     # --- Clear Session State & Return Result ---
     # Only clear action type/data, not login info

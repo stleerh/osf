@@ -1,0 +1,148 @@
+/* frontend/src/components/SettingsDialog.css */
+.settings-dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5); /* Semi-transparent black overlay */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.settings-dialog {
+    background-color: #ffffff; /* White background */
+    color: #333333; /* Dark grey text */
+    padding: 25px 30px;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2); /* Standard shadow */
+    border: 1px solid #e0e0e0; /* Light border */
+    min-width: 400px;
+    max-width: 90%;
+}
+
+.settings-dialog h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    color: #111111; /* Very dark grey/black for heading */
+    border-bottom: 1px solid #dddddd; /* Lighter border */
+    padding-bottom: 10px;
+    font-weight: 600; /* Slightly bolder heading */
+}
+
+.settings-section {
+    margin-bottom: 20px;
+}
+
+.settings-section > label { /* Top-level labels */
+    display: block;
+    margin-bottom: 8px;
+    font-weight: bold;
+    color: #555555; /* Medium grey label */
+}
+
+.provider-options {
+    display: flex;
+    flex-wrap: wrap; /* Allow wrapping if needed */
+    gap: 15px;
+}
+
+.provider-options label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    color: #333333; /* Match default text color */
+}
+
+.provider-options label input[type="radio"] {
+    accent-color: #007bff; /* Standard blue accent */
+    cursor: pointer;
+}
+
+.provider-options label[disabled] {
+    cursor: not-allowed;
+    color: #999999; /* Lighter grey for disabled */
+}
+.provider-options label[disabled] input[type="radio"] {
+    cursor: not-allowed;
+}
+
+
+.settings-dialog select,
+.settings-dialog input[type="text"] { /* Style applies to select and potential text inputs */
+    width: 100%;
+    padding: 9px 12px;
+    border-radius: 4px;
+    border: 1px solid #cccccc; /* Standard input border */
+    background-color: #ffffff; /* White background for inputs */
+    color: #333333; /* Dark text in inputs */
+    box-sizing: border-box;
+    font-size: 0.95em;
+}
+
+.settings-dialog select:focus,
+.settings-dialog input[type="text"]:focus {
+    outline: none;
+    border-color: #007bff; /* Highlight border on focus */
+    box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25); /* Subtle focus glow */
+}
+
+.settings-dialog select:disabled {
+    background-color: #f8f8f8; /* Slightly off-white disabled background */
+    color: #aaaaaa; /* Greyed-out text */
+    cursor: not-allowed;
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 25px;
+    padding-top: 15px;
+    border-top: 1px solid #dddddd; /* Lighter separator line */
+}
+
+/* Standard button styles - adjust if you have global button classes */
+.settings-actions button {
+    padding: 8px 18px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500; /* Medium weight */
+    font-size: 0.95em;
+    transition: background-color 0.2s ease;
+}
+
+.button-primary {
+    background-color: #007bff; /* Primary blue */
+    color: white;
+    border: 1px solid #007bff;
+}
+.button-primary:hover {
+    background-color: #0056b3; /* Darker blue on hover */
+    border-color: #0056b3;
+}
+.button-primary:disabled {
+    background-color: #c0c0c0; /* Disabled grey */
+    border-color: #c0c0c0;
+    cursor: not-allowed;
+}
+
+.button-secondary {
+    background-color: #f8f9fa; /* Very light grey */
+    color: #555; /* Darker text */
+    border: 1px solid #cccccc; /* Light border */
+}
+.button-secondary:hover {
+    background-color: #e2e6ea; /* Slightly darker grey on hover */
+    border-color: #b0b0b0;
+}
+
+.error-text {
+    color: #dc3545; /* Standard red for errors */
+    font-size: 0.9em;
+    margin-top: 5px;
+}

@@ -1,0 +1,339 @@
+name: ConfigMap
+desc: ConfigMap for monolithic Loki
+yaml:
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+data:
+  local-config.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+      grpc_server_max_recv_msg_size: 10485760
+      http_server_read_timeout: 1m
+      http_server_write_timeout: 1m
+      log_level: error
+    target: all
+    common:
+      path_prefix: /pvc-store  # refers to a PersistentVolumeClaim
+      storage:
+        filesystem:
+          chunks_directory: /pvc-store/chunks
+          rules_directory: /pvc-store/rules
+      replication_factor: 1
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: inmemory
+    compactor:
+      compaction_interval: 5m
+      retention_enabled: true
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 150
+    frontend:
+      compress_responses: true
+    ingester:
+      chunk_encoding: snappy
+      chunk_retain_period: 1m
+    query_range:
+      align_queries_with_step: true
+      cache_results: true
+      max_retries: 5
+      results_cache:
+        cache:
+          enable_fifocache: true
+          fifocache:
+            max_size_bytes: 500MB
+            validity: 24h
+      parallelise_shardable_queries: true
+    query_scheduler:
+      max_outstanding_requests_per_tenant: 2048
+    schema_config:
+      configs:
+        - from: 2022-01-01
+          store: boltdb-shipper
+          object_store: filesystem
+          schema: v11
+          index:
+            prefix: index_
+            period: 24h
+    storage_config:
+      filesystem:
+        directory: /pvc-store/storage
+      boltdb_shipper:
+        active_index_directory: /pvc-store/index
+        shared_store: filesystem
+        cache_location: /pvc-store/boltdb-cache
+        cache_ttl: 24h
+    limits_config:
+      ingestion_rate_strategy: global
+      ingestion_rate_mb: 10
+      ingestion_burst_size_mb: 10
+      max_label_name_length: 1024
+      max_label_value_length: 2048
+      max_label_names_per_series: 30
+      reject_old_samples: true
+      reject_old_samples_max_age: 15m
+      creation_grace_period: 10m
+      enforce_metric_name: false
+      max_line_size: 256000
+      max_line_size_truncate: false
+      max_entries_limit_per_query: 10000
+      max_streams_per_user: 0
+      max_global_streams_per_user: 0
+      unordered_writes: true
+      max_chunks_per_query: 2000000
+      max_query_length: 721h
+      max_query_parallelism: 32
+      max_query_series: 10000
+      cardinality_limit: 100000
+      max_streams_matchers_per_query: 1000
+      max_concurrent_tail_requests: 10
+      retention_period: 24h
+      max_cache_freshness_per_query: 5m
+      max_queriers_per_tenant: 0
+      per_stream_rate_limit: 3MB
+      per_stream_rate_limit_burst: 15MB
+      max_query_lookback: 0
+      min_sharding_lookback: 0s
+      split_queries_by_interval: 1m
+
+name: FlowCollector
+desc: FlowCollector is a custom resource in Network Observability Operator; uses a monolithic Loki
+yaml:
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+  namespace: netobserv
+spec:
+  loki:
+    mode: Monolithic
+  namespace: netobserv
+
+name: FlowCollector
+desc: FlowCollector is a custom resource in Network Observability Operator; uses a LokiStack; sets sampling to 1, default is 50
+yaml:
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+  namespace: netobserv
+spec:
+  loki:
+    mode: LokiStack
+    lokiStack:
+      name: lokistack-nw  # refers to a LokiStack
+  agent:
+    ebpf:
+      sampling: 1
+  namespace: netobserv
+
+name: FlowCollector
+desc: FlowCollector is a custom resource in Network Observability Operator; disables Loki
+yaml:
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+  namespace: netobserv
+spec:
+  loki:
+    enable: false
+  namespace: netobserv
+
+name: LokiStack
+desc: LokiStack for Network Observability; for demo, use size = 1x.demo
+yaml:
+apiVersion: loki.grafana.com/v1
+kind: LokiStack
+metadata:
+  name: lokistack-nw
+  namespace: netobserv
+spec:
+  tenants:
+    mode: openshift-network
+  storage:
+    secret:
+      name: loki-s3  # refers to a Secret
+      type: s3
+  size: 1x.extra-small
+  storageClassName: gp3-csi
+
+name: OperatorGroup
+desc: OperatorGroup for Network Observability Operator 1.8
+yaml:
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  annotations:
+    olm.providedAPIs: 'FlowCollector.v1beta1.flows.netobserv.io,FlowCollector.v1beta2.flows.netobserv.io,FlowMetric.v1alpha1.flows.netobserv.io'
+  name: openshift-netobserv-operator
+  namespace: openshift-netobserv-operator
+
+name: OperatorGroup
+desc: OperatorGroup for Loki Operator 6.2.1
+yaml:
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  annotations:
+    olm.providedAPIs: 'FlowCollector.v1beta1.flows.netobserv.io,FlowCollector.v1beta2.flows.netobserv.io,FlowMetric.v1alpha1.flows.netobserv.io'
+  name: openshift-netobserv-operator
+  namespace: openshift-netobserv-operator
+
+name: PersistentVolumeClaim
+desc: 10G PersistentVolumeClaimk
+yaml:
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-store
+spec:
+  resources:
+    requests:
+      storage: 10G
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+
+name: Pod
+desc: Pod for Loki (example)
+yaml:
+apiVersion: v1
+kind: Pod
+metadata:
+  name: loki
+  labels:
+    app: loki
+spec:
+  securityContext:
+    runAsGroup: 1000
+    runAsUser: 1000
+    fsGroup: 1000
+  volumes:
+    - name: pvc-store
+      persistentVolumeClaim:
+        claimName: pvc-store  # refers to a PersistentVolumeClaim
+    - name: loki-config
+      configMap:
+        name: loki-config  # refers to a ConfigMap
+  containers:
+    - name: loki
+      image: grafana/loki:2.9.0
+      volumeMounts:
+        - mountPath: "/pvc-store"
+          name: pvc-store
+        - mountPath: "/etc/loki"
+          name: loki-config
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+
+name: Project
+desc: Project yaml for Network Observability Operator
+yaml:
+apiVersion: project.openshift.io/v1
+kind: Project
+metadata:
+  name: openshift-netobserv-operator
+
+name: Project
+desc: Project yaml for FlowCollector which is a custom resource in Network Observability Operator
+yaml:
+apiVersion: project.openshift.io/v1
+kind: Project
+metadata:
+  name: netobserv
+
+name: Project
+desc: Project yaml for Loki Operator
+yaml:
+apiVersion: project.openshift.io/v1
+kind: Project
+metadata:
+  name: openshift-operators-redhat
+
+name: Secret
+desc: Secret for Loki Operator (example)
+apiVersion: v1
+yaml:
+kind: Secret
+metadata:
+  name: loki-s3
+  namespace: netobserv
+data: # base64 values
+  access_key_id: <base64_id>
+  access_key_secret: <base64_secret>
+  bucketnames: c3RsZWUtY2x1c3RlcjU3NC03aG5wYi1pbWFnZS1yZWdpc3RyeS11cy13ZXN0LTEtcHRoZWJod2JwaGJ1dnA=
+  endpoint: aHR0cHM6Ly9zMy51cy13ZXN0LTEuYW1hem9uYXdzLmNvbQ==
+  region: dXMtd2VzdC0x
+
+name: Service
+desc: Service for Loki
+yaml:
+kind: Service
+apiVersion: v1
+metadata:
+  name: loki
+spec:
+  selector:
+    app: loki
+  ports:
+    - port: 3100
+      protocol: TCP
+
+name: Subscription
+desc: Subscription for Network Observability 1.8.1
+apiVersion: operators.coreos.com/v1alpha1
+yaml:
+kind: Subscription
+metadata:
+  name: netobserv-operator
+  namespace: openshift-netobserv-operator
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: netobserv-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: network-observability-operator.v1.8.1
+
+name: Subscription
+desc: Subscription for Loki Operator 6.1.5
+apiVersion: operators.coreos.com/v1alpha1
+yaml:
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: loki-operator
+  namespace: openshift-operators-redhat
+spec:
+  channel: stable-6.1
+  installPlanApproval: Automatic
+  name: loki-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+
+name: Subscription
+desc: Subscription for Loki Operator 6.2.1
+apiVersion: operators.coreos.com/v1alpha1
+yaml:
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: loki-operator
+  namespace: openshift-operators-redhat
+spec:
+  channel: stable-6.2
+  installPlanApproval: Automatic
+  name: loki-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+

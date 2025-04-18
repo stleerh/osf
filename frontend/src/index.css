@@ -27,12 +27,17 @@ body {
     background-color: #004080; /* OpenShift-like blue */
     color: white;
     border-bottom: 1px solid #ddd;
-    flex-shrink: 0; /* Prevent header from shrinking */
 }
 
 .app-header h1 {
     margin: 0;
     font-size: 1.4em;
+}
+
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 15px; /* Space between login indicator and settings */
 }
 
 #login-section {
@@ -57,6 +62,24 @@ body {
     background-color: #c0c0c0;
 }
 
+.settings-button {
+    background: none;
+    border: none;
+    color: #d0d0d0; /* Slightly off-white icon color */
+    cursor: pointer;
+    padding: 5px;
+    display: flex; /* Align icon nicely */
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: background-color 0.2s ease, color 0.2s ease; /* Add transition */
+}
+
+.settings-button:hover {
+    color: white; /* Make icon brighter */
+    background-color: #004080; /* Match header background on hover */
+}
+
 #cluster-status { /* Ensure status doesn't wrap too early */
     white-space: nowrap;
     overflow: hidden;
@@ -69,6 +92,13 @@ body {
     font-weight: bold;
 }
 
+#login-button {
+    background-color: #f5c389 !important;
+}
+
+#login-button:hover {
+    background-color: #e8a956 !important;
+}
 
 .main-content {
     display: flex;

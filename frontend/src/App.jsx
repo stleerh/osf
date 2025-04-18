@@ -3,7 +3,13 @@ import LoginIndicator from './components/LoginIndicator';
 import ChatPanel from './components/ChatPanel';
 import YamlPanel from './components/YamlPanel';
 import LoginDialog from './components/LoginDialog';
+import SettingsDialog from './components/SettingsDialog'; // Import SettingsDialog
+import { Settings } from 'lucide-react'; // Import an icon (install: npm install lucide-react)
 // Global styles are in index.css and imported in main.jsx.
+
+// Default LLM settings (match backend defaults if possible)
+const DEFAULT_PROVIDER = 'openai';
+const DEFAULT_MODEL = 'gpt-4.1-mini';
 
 function App() {
     const [messages, setMessages] = useState([]);
@@ -16,12 +22,22 @@ function App() {
     const [isProcessing, setIsProcessing] = useState(false); // General lock for API calls (chat, transcribe)
     const [isSubmittingYaml, setIsSubmittingYaml] = useState(false); // Specific lock for YAML submit
 
+    // --- Settings State ---
+    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [llmProvider, setLlmProvider] = useState(DEFAULT_PROVIDER);
+    const [llmModel, setLlmModel] = useState(DEFAULT_MODEL);
+    const [availableModels, setAvailableModels] = useState({ // Store fetched models
+        openai: [],
+        ollama: { models: [], error: null },
+        ibm_granite: []
+    });
+    // --- End Settings State ---
+
     // --- Refs ---
     const mediaRecorderRef = useRef(null);
     const audioChunksRef = useRef([]);
     const streamRef = useRef(null);
     const isCancelledRef = useRef(false);
-
     const initialMessageAdded = useRef(false); // Use a ref to track
 
     // --- Handlers ---
@@ -328,14 +344,14 @@ function App() {
         // --- Prepare payload with current YAML ---
         const payload = {
             prompt: prompt,
-            // Include the current state of the YAML panel in the request.
-            // The backend can use this to inform the LLM's next response.
-            current_yaml: yamlContent || null
+            current_yaml: yamlContent || null, // Current state of the YAML panel
+            provider: llmProvider, // Send current provider
+            model: llmModel       // Send current model
         };
 
         try {
             // Use Vite proxy
-            const response = await fetch('/chat', {
+            const response = await fetch('/chat', { // Use Vite proxy
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 // Send credentials (cookies) for session handling
@@ -345,7 +361,12 @@ function App() {
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({ error: `HTTP error! Status: ${response.status}` }));
-                throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
+                // Include provider/model in error if possible
+                let errMsg = errorData.error || `HTTP error! Status: ${response.status}`;
+                if (errMsg.includes("LLM") && !errMsg.includes(llmProvider)) {
+                     errMsg = `Error with ${llmProvider}:${llmModel}: ${errMsg}`;
+                }
+                throw new Error(errMsg);
             }
 
             const data = await response.json();
@@ -429,10 +450,22 @@ function App() {
 
         } catch (error) {
             console.error('Error sending message:', error);
-            addMessage('bot', `Error communicating with assistant: ${error.message}`, 'error');
+            addMessage('bot', `Error communicating with assistant (${llmProvider}:${llmModel}): ${error.message}`, 'error');
         } finally {
             setIsProcessing(false);
         }
+    };
+
+
+    // --- Settings Save Handler ---
+    const handleSaveSettings = (newProvider, newModel) => {
+         console.log(`Settings saved: Provider=${newProvider}, Model=${newModel}`);
+         setLlmProvider(newProvider);
+         setLlmModel(newModel);
+         // Optional: Persist settings (e.g., localStorage or backend /settings endpoint)
+         // localStorage.setItem('llmProvider', newProvider);
+         // localStorage.setItem('llmModel', newModel);
+         addMessage('bot', `LLM changed to ${newProvider}: ${newModel}`, 'info');
     };
 
 
@@ -487,19 +520,69 @@ function App() {
     }, []); // Keep empty dependency array
 
 
+    useEffect(() => {
+         const fetchModels = async () => {
+             try {
+                 console.log("Fetching available LLM models...");
+                 const response = await fetch('/available_models'); // Use Vite proxy
+                 if (!response.ok) {
+                      throw new Error(`HTTP error! Status: ${response.status}`);
+                 }
+                 const data = await response.json();
+                 console.log("Available models data:", data);
+                 setAvailableModels(data);
+
+                 // Optional: Set initial model based on fetched data if default isn't valid
+                 // For example, if default Ollama model isn't in the list
+                 if (llmProvider === 'ollama' && data.ollama?.models && !data.ollama.models.includes(llmModel)) {
+                     setLlmModel(data.ollama.models[0] || ''); // Set to first available
+                 }
+                 // Add similar logic for other providers if needed
+
+             } catch (error) {
+                 console.error("Error fetching available models:", error);
+                 addMessage('bot', `Error fetching available LLM models: ${error.message}`, 'error');
+                 // Keep default models in state, but maybe show error for Ollama
+                 setAvailableModels(prev => ({
+                     ...prev,
+                     ollama: { models: [], error: error.message }
+                 }));
+             }
+         };
+         fetchModels();
+         // Optional: Load saved settings from localStorage
+         // const savedProvider = localStorage.getItem('llmProvider');
+         // const savedModel = localStorage.getItem('llmModel');
+         // if (savedProvider && savedModel) {
+         //     setLlmProvider(savedProvider);
+         //     setLlmModel(savedModel);
+         // }
+    }, []); // Fetch only once on mount
+
+
     // -- Render ---
     return (
         <div className="app-container">
-            {/* Use header tag for semantics, style with CSS */}
             <header className="app-header">
                 <h1>OpenShift Forward - AI Companion</h1>
-                <LoginIndicator
-                    isLoggedIn={isLoggedIn}
-                    clusterInfo={clusterInfo}
-                    clusterType={clusterType}
-                    onLoginClick={() => setIsLoginDialogOpen(true)}
-                    onLogoutClick={handleLogout}
-                />
+                <div className="header-controls"> {/* Group login and settings */}
+                    <LoginIndicator
+                        isLoggedIn={isLoggedIn}
+                        clusterInfo={clusterInfo}
+                        clusterType={clusterType}
+                        onLoginClick={() => setIsLoginDialogOpen(true)}
+                        onLogoutClick={handleLogout}
+                    />
+                    {/* --- Settings Button --- */}
+                    <button
+                        onClick={() => setIsSettingsOpen(true)}
+                        className="settings-button"
+                        title="LLM Settings"
+                        aria-label="LLM Settings"
+                    >
+                        <Settings size={20} /> {/* Icon */}
+                    </button>
+                </div>
             </header>
 
             <main className="main-content">
@@ -523,10 +606,20 @@ function App() {
                 />
             </main>
 
+
             <LoginDialog
                 isOpen={isLoginDialogOpen}
                 onClose={() => setIsLoginDialogOpen(false)}
                 onLoginSubmit={handleLoginSubmit}
+            />
+
+            <SettingsDialog
+                isOpen={isSettingsOpen}
+                onClose={() => setIsSettingsOpen(false)}
+                currentProvider={llmProvider}
+                currentModel={llmModel}
+                availableModels={availableModels}
+                onSave={handleSaveSettings}
             />
         </div>
     );

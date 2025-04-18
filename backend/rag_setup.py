@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
 # backend/rag_setup.py
+import json
 import os
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_community.document_loaders import DirectoryLoader, TextLoader, JSONLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from dotenv import load_dotenv
+
+import text2jsonl
 
 load_dotenv() # Ensure API key is loaded for embeddings
 
@@ -32,6 +35,23 @@ def get_embeddings_model():
         print("Please ensure your OPENAI_API_KEY is set correctly in .env")
         return None
 
+def jsonl_metadata_func(json_object: dict, metadata: dict) -> dict:
+    """
+    Extracts metadata from a JSON object (one line in the jsonl file).
+
+    Args:
+        json_object: The Python dictionary loaded from a single JSON line.
+        metadata: Existing metadata (like 'source' and 'seq_num').
+
+    Returns:
+        Updated metadata dictionary.
+    """
+    # Example: Extract 'name', 'desc', and 'yaml' fields if they exist in your JSON lines
+    metadata["name"] = json_object.get("name", None)
+    metadata["desc"] = json_object.get("desc", None)
+    metadata["yaml"] = json_object.get("yaml", None)
+    return metadata
+
 def build_vector_store(embeddings):
     """Loads docs, splits them, creates embeddings, and builds the FAISS store."""
     if not embeddings:
@@ -43,34 +63,84 @@ def build_vector_store(embeddings):
          print(f"Error: Knowledge base directory '{KNOWLEDGE_BASE_DIR}' not found.")
          return None
 
+    all_docs = []
     try:
-        # Using TextLoader for .txt and DirectoryLoader with glob for flexibility
-        # You might need different loaders (e.g., PyPDFLoader) for other file types
-        loader = DirectoryLoader(
+        # --- Load .txt files ---
+        print("Loading .txt files...")
+        txt_loader = DirectoryLoader(
             KNOWLEDGE_BASE_DIR,
-            glob="**/*.txt", # Load .txt files
+            glob="**/*.txt",
             loader_cls=TextLoader,
             show_progress=True,
-            use_multithreading=True
+            use_multithreading=True,
+            # Optional: Add encoding if your files aren't UTF-8
+            # loader_kwargs={'encoding': 'utf-8'}
         )
-        # Add more loaders if needed, e.g., for markdown
+        txt_docs = txt_loader.load()
+        if txt_docs:
+            print(f"Loaded {len(txt_docs)} .txt documents.")
+            all_docs.extend(txt_docs)
+
+        # --- Load .md files ---
+        print("Loading .md files...")
         md_loader = DirectoryLoader(
              KNOWLEDGE_BASE_DIR,
-             glob="**/*.md", # Load .md files
+             glob="**/*.md",
              loader_cls=TextLoader, # TextLoader often works okay for basic MD
              show_progress=True,
              use_multithreading=True
         )
-
-        docs = loader.load()
         md_docs = md_loader.load()
-        all_docs = docs + md_docs # Combine documents from different loaders
+        if md_docs:
+            print(f"Loaded {len(md_docs)} .md documents.")
+            all_docs.extend(md_docs)
+
+        # --- Load .dat files ---
+        print("Converting .dat files to *.jsonl...")
+        for filename in os.listdir(KNOWLEDGE_BASE_DIR):
+            if filename.endswith('.dat'):
+                input_path = os.path.join(KNOWLEDGE_BASE_DIR, filename)
+                entries = text2jsonl.parse_custom_file(input_path)
+
+                # Create output filename with .jsonl extension
+                basename = os.path.splitext(filename)[0]
+                output_path = os.path.join(KNOWLEDGE_BASE_DIR, f"{basename}.jsonl")
+                text2jsonl.write_jsonl(entries, output_path)
+
+        # --- Load .jsonl files ---
+        print("Loading .jsonl files...")
+        # IMPORTANT: Configure jq_schema based on your JSON structure
+        # '.' means the entire JSON object content becomes the document page_content
+        # '.text_field' would mean only the value of the 'text_field' key is used
+        # Adjust this schema to point to the main text content in your JSON lines.
+        jsonl_jq_schema = '.'
+
+        jsonl_loader = DirectoryLoader(
+            KNOWLEDGE_BASE_DIR,
+            glob="**/*.jsonl",
+            loader_cls=JSONLoader,
+            loader_kwargs={
+                'jq_schema': jsonl_jq_schema,
+                'json_lines': True, # Crucial for .jsonl
+                'text_content': False, # Often set False when using jq_schema to avoid double processing
+                # Optional: Add metadata extraction
+                # 'metadata_func': jsonl_metadata_func
+            },
+            show_progress=True,
+            # Multithreading might be less effective here depending on jq performance
+            use_multithreading=True
+        )
+        jsonl_docs = jsonl_loader.load()
+        if jsonl_docs:
+            print(f"Loaded {len(jsonl_docs)} documents from .jsonl files.")
+            all_docs.extend(jsonl_docs)
+        # --- End JSONL Loading ---
 
         if not all_docs:
-            print("No documents found in the knowledge base directory.")
+            print(f"No documents found in '{KNOWLEDGE_BASE_DIR}' with specified globs (.txt, .md, .jsonl).")
             return None
 
-        print(f"Loaded {len(all_docs)} documents.")
+        print(f"Total documents loaded: {len(all_docs)}")
 
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=CHUNK_SIZE,
@@ -85,6 +155,10 @@ def build_vector_store(embeddings):
              return None
 
         print("Creating FAISS vector store...")
+        # Ensure splits list is not empty before passing to FAISS
+        if not splits:
+             print("Error: No document chunks to add to FAISS.")
+             return None
         vector_store = FAISS.from_documents(splits, embeddings)
         print("FAISS vector store created.")
 
@@ -93,8 +167,15 @@ def build_vector_store(embeddings):
         print("FAISS index saved successfully.")
         return vector_store
 
+    except ImportError:
+         print("\nError: Missing dependencies for loading documents.")
+         print("Please ensure 'jq' is installed (`pip install jq`) for JSONLoader.")
+         print("Or check installs for other loaders if used (e.g., 'pypdf' for PDFs).")
+         return None
     except Exception as e:
         print(f"Error building vector store: {e}")
+        import traceback
+        traceback.print_exc() # Print full traceback for detailed error
         return None
 
 def load_or_build_vector_store():
@@ -133,7 +214,7 @@ if __name__ == "__main__":
         print("\nVector store loaded/built. Testing retrieval...")
         try:
             retriever = vs.as_retriever(search_kwargs={"k": 3}) # Retrieve top 3 docs
-            query = "What collects logs?"
+            query = "How do you create a project?"
             results = retriever.invoke(query)
             print(f"\nResults for query '{query}':")
             if results:

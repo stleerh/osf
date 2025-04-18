@@ -78,6 +78,8 @@ Prerequisites:
     FLASK_SECRET_KEY='<some_random_key>'
     ```
 
+    FLASK_SECRET_KEY can be any arbitrary value.
+
 6. Set up frontend
 
     ```
@@ -86,10 +88,19 @@ Prerequisites:
       > Choose "Ignore files and continue".
     cd frontend
     npm install
+    npm install lucide-react
 
     rm -rf .gitignore README.md eslint.config.js public src/App.css src/assets
     git restore index.html src/App.jsx src/index.css src/main.jsx
     ```
+
+7. (Optional) Set up Ollama
+
+    - Follow instructions to [install Ollama](https://github.com/ollama/ollama).
+    - Get some models using `ollama pull <model_library>`.  In OSF, you should see the models by clicking the Settings icon in the upper right corner.
+
+    Note: In OSF, your LLM selection is not preserved and will be reset on a new session.
+
 
 ## Run application
 
@@ -117,6 +128,6 @@ Prerequisites:
 
     Point your browser at: [http://localhost:5173](http://localhost:5173)
 
-    Note: If you want to change the ports, take a look at _frontend/vite.config.js_ and _backend/app.py_.
+    Note: If you want to change the port, take a look at _frontend/vite.config.js_ and _backend/app.py_.
 
     Happy shifting! &#x1f600;

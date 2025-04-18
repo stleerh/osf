@@ -1,6 +1,7 @@
 backend/.env
 backend/__pycache__
 backend/faiss_index
+backend/knowledge_base/*.jsonl
 docker/kubectl
 docker/oc
 frontend/dist
