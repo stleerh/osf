@@ -44,6 +44,7 @@ load_dotenv()
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'mysecret')
 CORS(app, supports_credentials=True, origins=["http://localhost:5173", "http://127.0.0.1:5173"]) # Adjust port if needed
+API_PREFIX = '/api'
 
 # --- Default LLM Configuration ---
 DEFAULT_PROVIDER = 'openai'
@@ -192,7 +193,12 @@ def get_llm_instance(provider, model_name):
             return ChatOpenAI(model=model_name, temperature=temperature)
         elif provider == 'ollama':
             print(f"Initializing ChatOllama with base_url='{OLLAMA_BASE_URL}'") # Add debug
-            return ChatOllama(model=model_name, base_url=OLLAMA_BASE_URL, temperature=temperature)
+            return ChatOllama(
+                model=model_name,
+                base_url=OLLAMA_BASE_URL,
+                temperature=temperature,
+                timout=300
+            )
         elif provider == 'ibm_granite':
              # Placeholder - requires langchain-ibm and credentials
              print("WARNING: IBM Granite provider selected but not fully implemented.")
@@ -222,7 +228,7 @@ def get_llm_instance(provider, model_name):
 def api_root():
     return jsonify({"message": "OpenShift Forward - AI Companion"}), 200
 
-@app.route('/clear_session', methods=['GET', 'POST'])
+@app.route(f'{API_PREFIX}/clear_session', methods=['GET', 'POST'])
 def clear_user_session():
     """Clears the entire session for the current user."""
     session.clear()
@@ -231,7 +237,7 @@ def clear_user_session():
 
 
 # Check initial login status based on session
-@app.route('/check_login', methods=['GET'])
+@app.route(f'{API_PREFIX}/check_login', methods=['GET'])
 def check_login():
     if session.get('cluster_logged_in'):
         return jsonify({
@@ -242,7 +248,7 @@ def check_login():
     else:
         return jsonify({"isLoggedIn": False})
 
-@app.route('/available_models', methods=['GET'])
+@app.route(f'/{API_PREFIX}/available_models', methods=['GET'])
 def get_available_models():
     ollama_models = []
     ollama_error = None
@@ -288,7 +294,7 @@ def get_available_models():
         'ibm_granite': ibm_granite_models # Keep placeholder structure
     })
 
-@app.route('/chat', methods=['POST'])
+@app.route(f'{API_PREFIX}/chat', methods=['POST'])
 def chat():
     data = request.json
     user_prompt = data.get('prompt')
@@ -455,7 +461,7 @@ def chat():
         return jsonify({"error": error_msg}), 500
 
 
-@app.route('/transcribe', methods=['POST'])
+@app.route(f'{API_PREFIX}/transcribe', methods=['POST'])
 def transcribe_audio():
      if not openai_client:
          return jsonify({"error": "OpenAI client not initialized. Check API key."}), 500
@@ -487,7 +493,7 @@ def transcribe_audio():
         return jsonify({"error": f"Transcription failed: {e}"}), 500
 
 
-@app.route('/login', methods=['POST'])
+@app.route(f'{API_PREFIX}/login', methods=['POST'])
 def login():
     data = request.json
     cluster_type = data.get('cluster_type')
@@ -709,7 +715,7 @@ def login():
         return jsonify({"success": False, "error": output})
 
 
-@app.route('/logout', methods=['POST'])
+@app.route(f'{API_PREFIX}/logout', methods=['POST'])
 def logout():
     session.pop('cluster_logged_in', None)
     session.pop('cluster_type', None)
@@ -720,7 +726,7 @@ def logout():
     return jsonify({"success": True})
 
 
-@app.route('/submit', methods=['POST'])
+@app.route(f'{API_PREFIX}/submit', methods=['POST'])
 def submit_yaml():
     if not session.get('cluster_logged_in'):
         return jsonify({"success": False, "error": "Not logged into a cluster."}), 403

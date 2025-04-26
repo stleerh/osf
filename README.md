@@ -32,13 +32,13 @@ Prerequisites:
 
     ```
     # venv
-    python3 -m venv pyenv
+    sudo apt install python3.12
+    python3.12 -m venv pyenv
     ```
 
     1.2 Activate the virtual environment.
 
     ```
-    # venv
     source pyenv/bin/activate
     ```
 
@@ -46,7 +46,7 @@ Prerequisites:
 
     - The user running the Flask app must have access to the `docker` command without requiring sudo privileges.
     ```
-    sudo usermod -aG user docker  # replace user with the actual user
+    sudo usermod -aG docker user  # replace user with the actual user
     # Log out and log back in for it to take effect.
     ```
 

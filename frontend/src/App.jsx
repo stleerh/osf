@@ -10,6 +10,7 @@ import { Settings } from 'lucide-react'; // Import an icon (install: npm install
 // Default LLM settings (match backend defaults if possible)
 const DEFAULT_PROVIDER = 'openai';
 const DEFAULT_MODEL = 'gpt-4.1-mini';
+const API_PREFIX = '/api'; // sync with back end
 
 function App() {
     const [messages, setMessages] = useState([]);
@@ -188,7 +189,7 @@ function App() {
         formData.append('audio', audioBlob, filename);
 
         try {
-            const response = await fetch('/transcribe', {
+            const response = await fetch(`${API_PREFIX}/transcribe`, {
                 method: 'POST',
                 credentials: 'include', // Include cookies if needed by backend (though less likely for transcribe)
                 body: formData
@@ -228,7 +229,7 @@ function App() {
         setIsProcessing(true); // Use general processing lock during login
 
         try {
-            const response = await fetch('/login', {
+            const response = await fetch(`${API_PREFIX}/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 credentials: 'include', // Send cookies
@@ -269,7 +270,7 @@ function App() {
         if (isProcessing || isSubmittingYaml) return;
         setIsProcessing(true);
         try {
-            const response = await fetch('/logout', {
+            const response = await fetch(`${API_PREFIX}/logout`, {
                 method: 'POST',
                 credentials: 'include' // Send cookies
             });
@@ -305,7 +306,7 @@ function App() {
 
         try {
             // Send ONLY the YAML. Backend determines final verb (apply/create).
-            const response = await fetch('/submit', {
+            const response = await fetch(`${API_PREFIX}/submit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 credentials: 'include',
@@ -351,7 +352,7 @@ function App() {
 
         try {
             // Use Vite proxy
-            const response = await fetch('/chat', { // Use Vite proxy
+            const response = await fetch(`${API_PREFIX}/chat`, { // Use Vite proxy
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 // Send credentials (cookies) for session handling
@@ -370,7 +371,11 @@ function App() {
             }
 
             const data = await response.json();
-            addMessage('bot', data.reply);
+            // Check if data.reply has content before adding it as a message.
+            if (data.reply && data.reply.trim() !== '') {
+                addMessage('bot', data.reply);
+            }
+
             // Update YAML panel ONLY if the backend provides new YAML.
             // Do NOT overwrite user edits otherwise.
             if (data.yaml !== undefined && data.yaml !== null) {
@@ -476,7 +481,7 @@ function App() {
             setIsProcessing(true); // Indicate loading
             try {
                 // Use Vite proxy - path is relative to frontend host
-                const response = await fetch('/check_login');
+                const response = await fetch(`${API_PREFIX}/check_login`);
                 if (!response.ok) {
                      // Try to get error message from backend if possible
                      let errorMsg = `HTTP error! Status: ${response.status}`;
@@ -524,7 +529,7 @@ function App() {
          const fetchModels = async () => {
              try {
                  console.log("Fetching available LLM models...");
-                 const response = await fetch('/available_models'); // Use Vite proxy
+                 const response = await fetch(`${API_PREFIX}/available_models`); // Use Vite proxy
                  if (!response.ok) {
                       throw new Error(`HTTP error! Status: ${response.status}`);
                  }

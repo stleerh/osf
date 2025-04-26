@@ -6,15 +6,13 @@ export default defineConfig({
     server: {
         port: 5173, // Ensure this matches the CORS origin in Flask
         proxy: {
-            // proxy requests to Flask server
-            '/chat': 'http://localhost:5001',
-            '/available_models': 'http://localhost:5001',
-            '/clear_session': 'http://localhost:5001',
-            '/transcribe': 'http://localhost:5001',
-            '/login': 'http://localhost:5001',
-            '/logout': 'http://localhost:5001',
-            '/submit': 'http://localhost:5001',
-            '/check_login': 'http://localhost:5001',
+            '/api': {
+                target: 'http://127.0.0.1:5001',
+                changeOrigin: true, // Needed for cookie/session handling
+            },
         },
+    },
+    build: {
+        outDir: '../dist/www',
     },
 });
