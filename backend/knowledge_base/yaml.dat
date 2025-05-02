@@ -168,8 +168,6 @@ yaml:
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  annotations:
-    olm.providedAPIs: 'FlowCollector.v1beta1.flows.netobserv.io,FlowCollector.v1beta2.flows.netobserv.io,FlowMetric.v1alpha1.flows.netobserv.io'
   name: openshift-netobserv-operator
   namespace: openshift-netobserv-operator
 
@@ -179,8 +177,6 @@ yaml:
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  annotations:
-    olm.providedAPIs: 'FlowCollector.v1beta1.flows.netobserv.io,FlowCollector.v1beta2.flows.netobserv.io,FlowMetric.v1alpha1.flows.netobserv.io'
   name: openshift-netobserv-operator
   namespace: openshift-netobserv-operator
 
@@ -290,7 +286,7 @@ spec:
       protocol: TCP
 
 name: Subscription
-desc: Subscription for Network Observability 1.8.1
+desc: Subscription for Network Observability; stable channel
 apiVersion: operators.coreos.com/v1alpha1
 yaml:
 kind: Subscription
@@ -303,10 +299,9 @@ spec:
   name: netobserv-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
-  startingCSV: network-observability-operator.v1.8.1
 
 name: Subscription
-desc: Subscription for Loki Operator 6.1.5
+desc: Subscription for Loki Operator; stable-6.1 channel
 apiVersion: operators.coreos.com/v1alpha1
 yaml:
 apiVersion: operators.coreos.com/v1alpha1
@@ -322,7 +317,7 @@ spec:
   sourceNamespace: openshift-marketplace
 
 name: Subscription
-desc: Subscription for Loki Operator 6.2.1
+desc: Subscription for Loki Operator; stable-6.2 channel
 apiVersion: operators.coreos.com/v1alpha1
 yaml:
 apiVersion: operators.coreos.com/v1alpha1

@@ -32,6 +32,7 @@ function App() {
         ollama: { models: [], error: null },
         ibm_granite: []
     });
+    const [commandAction, setCommandAction] = useState(null); // e.g., 'apply', 'run_script', null
     // --- End Settings State ---
 
     // --- Refs ---
@@ -296,80 +297,112 @@ function App() {
     // Submit handler (called by button OR by 'submit' action)
     const handleSubmitYaml = async (yaml) => {
         // Check simplified conditions
-        if (!isLoggedIn || !yaml || isProcessing || isSubmittingYaml) {
-            console.warn("Submit YAML conditions not met inside handler.", {isLoggedIn, yaml: !!yaml, isProcessing, isSubmittingYaml});
+        if (!isLoggedIn || !yaml || isProcessing) {
+            console.warn("Submit YAML conditions not met inside handler.", {isLoggedIn, yaml: !!yaml, isProcessing});
             addMessage('bot', 'Cannot submit: Conditions not met (check login, YAML, action state).', 'error');
             return;
         }
         addMessage('bot', `Submitting YAML...`, 'info');
         setIsSubmittingYaml(true);
+        setCommandAction(null); // Disable button while submitting
 
         try {
-            // Send ONLY the YAML. Backend determines final verb (apply/create).
+            // Call the /submit endpoint, which will now generate and execute the script
             const response = await fetch(`${API_PREFIX}/submit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ yaml: yaml })
+                body: JSON.stringify({
+                    yaml: yaml,
+                    provider: llmProvider, // Send current LLM choice for script generation
+                    model: llmModel
+                })
             });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: `HTTP error! Status: ${response.status}` }));
+                 let errMsg = errorData.error || `HTTP error! Status: ${response.status}`;
+                 addMessage('bot', `Error during submission process: ${errMsg}`, 'error');
+                 throw new Error(errMsg); // Propagate error for console logging
+            }
 
             const data = await response.json();
             // Backend now returns tool_used based on its logic
             const toolUsed = data.tool_used || 'cluster tool';
+            const scriptOutput = data.output;
+            const scriptError = data.error;
+            const success = data.success;
 
-            // Log based on the action the backend *actually* performed (if available/reliable)
-            // For now, just use the original intent for logging success/failure message
-            if (data.success) {
-                addMessage('bot', `YAML submitted successfully via '${toolUsed}'.\nOutput:\n<pre>${data.output || '(No output)'}</pre>`, 'info');
+            // Format and display the execution result in the chat
+            let resultsMessageContent = "";
+            let resultsMessageType = "";
+
+            if (success) {
+                resultsMessageContent += `YAML applied successfully via '${toolUsed}'.`;
+                resultsMessageType = 'info';
+                if (scriptOutput) {
+                    resultsMessageContent += `\nOutput:\n<pre>${scriptOutput}</pre>`; // Show full output
+                }
             } else {
-                const errorMessage = `Error submitting YAML via '${toolUsed}':\n<pre>${data.error || 'Unknown error'}</pre>`;
-                addMessage('bot', errorMessage, 'error');
+                resultsMessageContent += `Failed to apply YAML via '${toolUsed}'.`;
+                resultsMessageType = 'error';
+                if (scriptError) {
+                    resultsMessageContent += `\nError:\n<pre>${scriptError}</pre>`; // Show full error
+                } else {
+                    resultsMessageContent += `\nNo specific error output provided by the script.`;
+                }
             }
+
+            addMessage('bot', resultsMessageContent, resultsMessageType);
 
         } catch (error) {
             console.error('Error submitting YAML:', error);
-            addMessage('bot', `Submit YAML network error: ${error.message}`, 'error');
+            addMessage('bot', `Submit process network error: ${error.message}`, 'error');
         } finally {
-            setIsSubmittingYaml(false);
+            setIsProcessing(false); // Release general lock
+            setIsSubmittingYaml(false); // Release specific flag (might be redundant if using only isProcessing)
         }
     };
 
 
-    // --- Chat Message Handler (Processing OSF Action) ---
+    // --- Chat Message Handler ---
     const handleSendMessage = async (prompt) => {
-        if (!prompt || isProcessing || isSubmittingYaml) return; // Check all locks
+        if (!prompt || isProcessing) { // Check general processing lock
+            return;
+        }
+
+        // Clear previous action when sending a new message
+        setCommandAction(null);
 
         addMessage('user', prompt);
-        setIsProcessing(true);
+        setIsProcessing(true); // Lock input while waiting for chat response
 
-        // --- Prepare payload with current YAML ---
         const payload = {
             prompt: prompt,
-            current_yaml: yamlContent || null, // Current state of the YAML panel
-            provider: llmProvider, // Send current provider
-            model: llmModel       // Send current model
+            current_yaml: yamlContent || null,
+            provider: llmProvider,
+            model: llmModel
         };
 
         try {
-            // Use Vite proxy
-            const response = await fetch(`${API_PREFIX}/chat`, { // Use Vite proxy
+            const response = await fetch(`${API_PREFIX}/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                // Send credentials (cookies) for session handling
                 credentials: 'include',
                 body: JSON.stringify(payload)
             });
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({ error: `HTTP error! Status: ${response.status}` }));
-                // Include provider/model in error if possible
                 let errMsg = errorData.error || `HTTP error! Status: ${response.status}`;
                 if (errMsg.includes("LLM") && !errMsg.includes(llmProvider)) {
                      errMsg = `Error with ${llmProvider}:${llmModel}: ${errMsg}`;
                 }
+                addMessage('bot', `Error communicating with assistant (${llmProvider}:${llmModel}): ${errMsg}`, 'error');
                 throw new Error(errMsg);
             }
 
+            // --- Process Reply, Actions, YAML ---
             const data = await response.json();
             // Check if data.reply has content before adding it as a message.
             if (data.reply && data.reply.trim() !== '') {
@@ -384,10 +417,10 @@ function App() {
 
             // --- Process the OSF Action ---
             const action = data.osf_action;
-            if (action && action.type) {
-                console.log(`Processing OSF Action: ${action.type}`, action.data || '');
-                switch (action.type) {
-                    case 'apply_yaml':
+            if (action) {
+                console.log(`Processing OSF Action: ${action.type}`);
+                switch (action) {
+                    case 'display_yaml':
                         // No frontend state update needed, just informational
                         // The backend reply might already contain instructions.
                         break;
@@ -420,16 +453,9 @@ function App() {
                         }
                         break;
 
-                    case 'cmd':
-                        // Display the command(s) to the user. Maybe add a "copy" button later?
-                        // Add ; as newline for better readability if multiple commands
-                        const commandsToShow = (action.data || '').replace(/;/g, ';\n');
-                        addMessage('bot', `Suggested Command(s):\n<pre>${commandsToShow}</pre>`, 'info');
-                        // Note: We are NOT executing these commands automatically for security.
-                        break;
                     case 'login':
                         // Simulate clicking the "Login" button
-                        addMessage('bot', 'Action requested: Login'); // No 'info' type needed for gray
+                        addMessage('bot', 'Action requested: Log in'); // No 'info' type needed for gray
                         if (!isLoggedIn) {
                             addMessage('bot', 'Please enter your credentials.', 'info');
                             setIsLoginDialogOpen(true);
@@ -439,7 +465,7 @@ function App() {
                         break;
                     case 'logout':
                         // Simulate clicking the "Log Out" button
-                        addMessage('bot', 'Action requested: Logout'); // Default bot gray
+                        addMessage('bot', 'Action requested: Log out'); // Default bot gray
 
                         if (isLoggedIn) {
                             handleLogout(); // Call the function that does the API call & state update
@@ -448,7 +474,7 @@ function App() {
                         }
                         break;
                     default:
-                        console.warn(`Received unknown OSF Action type: ${action.type}`);
+                        console.warn(`Received unknown OSF Action: ${action}`);
                 }
             }
             // --- End Process OSF Action ---
@@ -608,6 +634,7 @@ function App() {
                     isLoggedIn={isLoggedIn}
                     onSubmitYaml={handleSubmitYaml} // Pass updated handler
                     isSubmittingYaml={isSubmittingYaml}
+                    commandAction={commandAction} // Pass state to control button
                 />
             </main>
 

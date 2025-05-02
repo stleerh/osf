@@ -1,7 +1,6 @@
 # Helper functions
 
 # --- Standard Library Imports ---
-import atexit
 import os
 import shlex # Needed for shlex.quote
 import shutil
@@ -22,24 +21,23 @@ from kubernetes.client.exceptions import ApiException
 
 # --- Global Constants ---
 CLI_DOCKER_IMAGE = 'oc-image:latest' # Define the required Docker image
-TEMP_KUBECONFIG_DIR = '/tmp/temp_kube_configs'
+OSF_KUBECONFIG_DIR = '/tmp/osf_kube'
+OSF_EXEC_DIR = "/tmp/osf_exec"
 
 
-def run_in_container(docker_client, command_input, input_data=None, session_auth=None, timeout=60, environment_vars=None, command_is_string=False):
+def run_in_container(docker_client, command_input, session_auth=None, timeout=60, environment_vars=None, temp_dir_mapping=None):
     """
     Runs a command inside a Docker container using user-specific auth from session
     OR provided environment variables (e.g., for login). Handles input data.
     Assumes container ENTRYPOINT is ["/bin/bash", "-c"].
 
     Args:
-        command_input (list or str): Command to execute. List for actions like apply/create,
-                                     string for pre-constructed commands like OC login.
-        input_data (str, optional): Data to be piped as input (e.g., YAML). Mounts as file.
+        command_input (str): The command string to execute via /bin/bash -c.
         session_auth (dict, optional): User's auth info from Flask session.
         timeout (int, optional): Timeout in seconds for container execution. Defaults to 60.
         environment_vars (dict, optional): Environment variables to set inside the container.
                                            Used primarily for OpenShift password login.
-        command_is_string (bool, optional): Deprecated/Ignored. Logic now relies on type of command_input.
+        temp_dir_mapping (dict, optional): Mapping of host paths to container paths for volume mounts (e.g., {'/host/path/temp_run_id': '/app_temp'}).
 
     Returns:
         tuple: (success: bool, output: str)
@@ -48,13 +46,11 @@ def run_in_container(docker_client, command_input, input_data=None, session_auth
     """
     # --- Input Validation ---
     if not command_input:
-         return False, "No command provided to run_in_container."
-    if not isinstance(command_input, (list, str)):
-         return False, "command_input must be a list or a string."
+        return False, "No command provided to run_in_container."
     if environment_vars and not isinstance(environment_vars, dict):
-         return False, "Invalid environment_vars provided (must be dict)."
+        return False, "Invalid environment_vars provided (must be dict)."
     if session_auth and not isinstance(session_auth, dict):
-         return False, "Invalid session_auth provided (must be dict)."
+        return False, "Invalid session_auth provided (must be dict)."
 
     # Check authentication source if session_auth is required by the flow
     # Note: /login call provides environment_vars but no session_auth
@@ -67,56 +63,18 @@ def run_in_container(docker_client, command_input, input_data=None, session_auth
     container_kubeconfig_path = "/root/.kube/config" # Standard path in container
     temp_kubeconfig_filename = None # Track kubeconfig file for deletion
     temp_input_filename = None      # Track input file for deletion
-    final_command_string = None     # The single string command for bash -c
-    current_command_list = None     # Holds the command if input was a list
+    exit_code = -1 # Initialize exit_code
 
     try:
-        # --- Determine Initial Command Structure ---
-        # Define current_command_list or final_command_string based on input type
-        if isinstance(command_input, list):
-            current_command_list = list(command_input) # Work with a copy
-            # final_command_string remains None for now, will be built later
-        elif isinstance(command_input, str):
-             # Input is a string (e.g., from /login), use it directly
-             final_command_string = command_input
-             # current_command_list remains None
-        # No else needed due to initial validation
-
-        # --- Prepare Input Data File Mount (if input_data provided) ---
-        container_input_path = None
-        if input_data:
-             temp_input_filename = os.path.join(TEMP_KUBECONFIG_DIR, f"input_{uuid.uuid4().hex}.yaml")
-             try:
-                 with open(temp_input_filename, 'w') as f: f.write(input_data)
-             except Exception as e:
-                 return False, f"Failed to write temporary input file: {e}"
-
-             container_input_path = "/tmp/input.yaml" # Standard path inside container
-             volumes[temp_input_filename] = {'bind': container_input_path, 'mode': 'ro'}
-
-             # Modify the command LIST or STRING to use the file path
-             if current_command_list: # Modify the list if input was a list
-                 try:
-                     f_index = -1
-                     for i, arg in enumerate(current_command_list):
-                          if (arg == "-f" or arg == "--filename") and i + 1 < len(current_command_list) and current_command_list[i+1] == '-':
-                               f_index = i
-                               break
-                     if f_index != -1:
-                         current_command_list[f_index + 1] = container_input_path # Modify the list
-                         print(f"Modified command list to use input file: {current_command_list}")
-                     else:
-                         print(f"Warning: Command list {current_command_list} does not use '-f -', cannot auto-inject input file path.")
-                 except Exception as e:
-                      return False, f"Failed to modify command list for input file: {e}"
-
-             elif final_command_string: # Modify the string if input was a string
-                 if " -f - " in final_command_string:
-                      # Use shlex.quote for the path within the string replacement
-                      final_command_string = final_command_string.replace(" -f - ", f" -f {shlex.quote(container_input_path)} ", 1)
-                      print(f"Modified command string to use mounted input file.")
-                 else:
-                      print(f"Warning: Could not find ' -f - ' in command string for input data: {final_command_string}")
+        # --- Add Temporary Directory Volume Mount if mapping is provided ---
+        if temp_dir_mapping:
+            for host_path, container_path in temp_dir_mapping.items():
+                if os.path.exists(host_path):
+                    # Use read-only unless script needs to write back (unlikely for now)
+                    volumes[host_path] = {'bind': container_path, 'mode': 'ro'}
+                    print(f"DEBUG: Added temp execution volume mount: {host_path} -> {container_path}")
+                else:
+                    print(f"WARNING: Host path for temp execution directory mount does not exist: {host_path}")
 
 
         # --- Configure Auth based on session_auth (if provided - typically for actions like /submit) ---
@@ -128,95 +86,93 @@ def run_in_container(docker_client, command_input, input_data=None, session_auth
                 if not context:
                     return False, "Kubernetes context missing from session auth."
                 try:
-                    temp_kubeconfig_filename = os.path.join(TEMP_KUBECONFIG_DIR, f"kubeconfig_{uuid.uuid4().hex}")
-                    # --- TODO: Implement actual logic to build temp Kubeconfig ---
-                    # This needs to load the host config, find the specified context,
-                    # extract cluster+user details, and write a minimal config file.
-                    # Placeholder content:
-                    temp_kubeconfig_dict = {'current-context': context, 'contexts': [], 'clusters': [], 'users': []}
-                    print("WARNING: Using placeholder Kubeconfig content. Implement real extraction.")
-                    # --- End TODO ---
-                    with open(temp_kubeconfig_filename, 'w') as f: yaml.dump(temp_kubeconfig_dict, f)
+                    # --- Generate Temporary Kubeconfig ---
+                    # This logic remains important for kubectl
+                    print(f"Preparing temporary kubeconfig for context '{context}'...")
+                    temp_kubeconfig_filename = os.path.join(OSF_KUBECONFIG_DIR, f"kubeconfig_{uuid.uuid4().hex}")
+                    os.makedirs(OSF_KUBECONFIG_DIR, exist_ok=True) # Ensure base dir exists
+
+                    # Load host config to extract context details
+                    contexts, active_context = config.list_kube_config_contexts()
+                    target_context = None
+                    for c in contexts:
+                        if c['name'] == context:
+                            target_context = c
+                            break
+                    if not target_context:
+                        raise ConfigException(f"Context '{context}' not found in host kubeconfig.")
+
+                    # Find cluster and user details for the target context
+                    config_dict = config.load_kube_config_to_dict() # Load the full config
+                    target_cluster = None
+                    target_user = None
+
+                    for cluster in config_dict.get('clusters', []):
+                        if cluster['name'] == target_context['context']['cluster']:
+                            target_cluster = cluster
+                            break
+                    for user in config_dict.get('users', []):
+                        if user['name'] == target_context['context']['user']:
+                            target_user = user
+                            break
+
+                    if not target_cluster or not target_user:
+                        raise ConfigException(f"Cluster or user details not found for context '{context}'.")
+
+                    # Build minimal kubeconfig dict
+                    temp_kubeconfig_dict = {
+                         'apiVersion': 'v1',
+                         'kind': 'Config',
+                         'current-context': context,
+                         'contexts': [{'name': context, 'context': target_context['context']}],
+                         'clusters': [target_cluster],
+                         'users': [target_user]
+                    }
+                    # --- End Generate Kubeconfig ---
+
+                    with open(temp_kubeconfig_filename, 'w') as f:
+                        yaml.dump(temp_kubeconfig_dict, f)
                     volumes[temp_kubeconfig_filename] = {'bind': container_kubeconfig_path, 'mode': 'ro'}
                     print(f"Prepared temporary kubeconfig for context '{context}' at {temp_kubeconfig_filename}")
-                    # The command list (current_command_list) itself doesn't need modification here
-                except Exception as e:
-                    print(f"Error preparing temporary kubeconfig: {e}")
-                    traceback.print_exc() # Print stack trace for debugging
-                    return False, f"Error preparing kubeconfig: {e}"
 
-            elif session_auth['cluster_type'] == 'openshift':
-                # Handle OpenShift Actions: Inject auth flags into the command list
-                if not current_command_list:
-                     # This path requires the command to have been passed as a list (e.g., from /submit)
-                     return False, "Internal error: Expected command list for OpenShift action, but received string or invalid input."
+                    # Set KUBECONFIG env var inside container
+                    environment['KUBECONFIG'] = container_kubeconfig_path
 
-                token = session_auth.get('oc_token')
-                server = session_auth.get('oc_server')
-                skip_tls = session_auth.get('oc_skip_tls', False)
-                if not token or not server:
-                    return False, "OpenShift token/server missing from session for action."
-
-                action_cmd_list = list(current_command_list) # Work with a copy
-
-                # Prepare flags to insert (insert after 'oc' at index 1)
-                auth_flags_to_insert = []
-                auth_flags_to_insert.append(f"--server={server}")
-                auth_flags_to_insert.append(f"--token={token}")
-                if skip_tls:
-                    auth_flags_to_insert.append("--insecure-skip-tls-verify=true")
-
-                # Insert flags after 'oc'
-                if len(action_cmd_list) > 0 and action_cmd_list[0] == 'oc':
-                    action_cmd_list[1:1] = auth_flags_to_insert # Insert flags at index 1
-                    # Construct the final command string ONLY from this modified action list
-                    final_command_string = " ".join(shlex.quote(arg) for arg in action_cmd_list)
-                else:
-                    return False, f"Invalid OpenShift command list format (expected 'oc' first): {action_cmd_list}"
-
-
-        # --- Final Command String Construction (if not already set) ---
-        # This covers cases like K8s commands, or commands without session_auth
-        if final_command_string is None:
-            if current_command_list:
-                # Join the list (potentially modified by input file path) into the string
-                final_command_string = " ".join(shlex.quote(arg) for arg in current_command_list)
-            else:
-                # Should be unreachable if initial validation and logic are correct
-                return False, "Internal error: final command string could not be determined."
-
-        # --- Final Check: Ensure final_command_string is set ---
-        if not final_command_string:
-             return False, "Internal error: final command string is empty or not set before execution."
+                except (ConfigException, ApiException, Exception) as e:
+                    print(f"ERROR preparing temporary kubeconfig for context '{context}': {e}")
+                    traceback.print_exc()
+                    if temp_kubeconfig_filename and os.path.exists(temp_kubeconfig_filename):
+                        try: os.remove(temp_kubeconfig_filename);
+                        except: pass
+                    return False, f"Error preparing kubeconfig for context '{context}': {e}"
 
         # --- Run the Container ---
-        executable_type = "bash" if isinstance(command_input, str) else (current_command_list[0] if current_command_list else "unknown")
-        print(f"run_in_container executing: Type='{executable_type}'") # Log type being run
-        print(f"Executing final command string via bash -c: '{final_command_string}'") # Log the exact string
         if volumes:
-            print(f"Volumes mapped: {list(volumes.keys())}")
+            # Log final volumes, excluding sensitive kubeconfig path potentially
+            logged_volumes = {k: v for k, v in volumes.items() if not k.endswith(temp_kubeconfig_filename or 'nevermatch')}
+            print(f"Volumes mapped: {logged_volumes}")
         if environment:
-            print(f"Environment Variables set: {list(environment.keys())}")
+            # Log environment variables, excluding sensitive password
+            logged_environment = {k: (v if k != 'LOGIN_PASSWORD' else '***') for k, v in environment.items()}
+            print(f"Environment Variables set: {logged_environment}")
 
         start_time = time.time()
         container = None
         combined_logs = ""
         stdout_log = ""
         stderr_log = ""
-        exit_code = -1
 
         try:
-            # Run container and wait for completion
-            # Pass the final_command_string INSIDE A SINGLE-ELEMENT LIST
-            # to work correctly with ENTRYPOINT ["/bin/bash", "-c"]
+            # Command execution logic remains the same
             container = docker_client.containers.run(
                 image=CLI_DOCKER_IMAGE,
-                command=[final_command_string], # *** WRAP FINAL STRING IN LIST ***
+                command=[command_input], # Wrap in list for bash -c entrypoint
                 volumes=volumes,
                 environment=environment,
                 remove=False,      # Keep container after exit to retrieve logs
                 detach=True,       # Start detached
                 name=container_name,
+                network_mode='host', # support crc+ssh
                 stdout=True,
                 stderr=True
             )
@@ -245,37 +201,45 @@ def run_in_container(docker_client, command_input, input_data=None, session_auth
             output_for_processing = combined_logs if exit_code == 0 else (stderr_log or combined_logs) # Prioritize stderr on failure
 
         except docker.errors.ContainerError as ce:
-             print(f"Docker ContainerError: ExitCode={ce.exit_status}, Cmd={ce.command}, Image={ce.image}, Err={ce.stderr}")
-             exit_code = ce.exit_status
-             stderr_log = ce.stderr.decode('utf-8', errors='ignore').strip() if ce.stderr else str(ce)
-             # Try to get combined logs even on ContainerError
-             try:
-                 if container:
-                     combined_logs = container.logs(stdout=True, stderr=True).decode('utf-8', errors='ignore').strip()
-                     print(f"DEBUG Combined Logs on ContainerError:\n--- START LOGS ---\n{combined_logs}\n--- END LOGS ---")
-                     output_for_processing = stderr_log or combined_logs # Prioritize stderr from exception
-                 else:
-                      output_for_processing = stderr_log or f"ContainerError: {ce}"
-             except Exception:
-                  output_for_processing = stderr_log or f"ContainerError: {ce}" # Fallback
+            print(f"Docker ContainerError: ExitCode={ce.exit_status}, Cmd={ce.command}, Image={ce.image}, Err={ce.stderr}")
+            exit_code = ce.exit_status
+            stderr_log = ce.stderr.decode('utf-8', errors='ignore').strip() if ce.stderr else str(ce)
+
+            # Try to get combined logs even on ContainerError
+            try:
+                if container:
+                    combined_logs = docker_client.logs(container.id, stdout=True, stderr=True).decode('utf-8', errors='ignore').strip()
+                    print(f"DEBUG Combined Logs on ContainerError:\n--- START LOGS ---\n{combined_logs}\n--- END LOGS ---")
+                    # If stderr from exception is available, use that primarily, otherwise combined
+                    output_for_processing = stderr_log or combined_logs
+                else:
+                    # If container object wasn't even created, use stderr from exception or generic message
+                    output_for_processing = stderr_log or f"ContainerError: {ce}"
+            except Exception:
+                # Fallback if logs can't be retrieved
+                output_for_processing = stderr_log or f"ContainerError: {ce}"
+
+        except Exception as e:
+            print(f"Unexpected Error during docker.run or wait: {e}")
+            traceback.print_exc() # Log full stack trace
+            # exit_code might be uninitialized or -1
+            output_for_processing = f"Unexpected error during container startup or execution: {e}"
+            exit_code = -1 # Ensure exit_code reflects a general error
 
         finally:
-             # Ensure container is removed
-             if container:
-                 try:
-                     container.remove(force=True)
-                     # print(f"Container '{container_name}' removed.") # Optional success log
-                 except NotFound:
-                     pass # Container already gone or failed to start
-                 except APIError as e_rem:
-                     print(f"Error removing container '{container_name}': {e_rem}")
+            # Ensure container is removed
+            if container:
+                try:
+                    # Get the container by ID to ensure remove is called on a valid object
+                    docker_client.containers.get(container.id).remove(force=True)
+                    # print(f"Container '{container_name}' removed.")
+                except NotFound:
+                    pass # Container already gone or failed to start/be found
+                except APIError as e_rem:
+                    print(f"Error removing container '{container_name}': {e_rem}")
 
         elapsed_time = time.time() - start_time
         print(f"Container '{container_name}' finished. Exit code: {exit_code}. Time: {elapsed_time:.2f}s")
-        if stdout_log and exit_code != 0:
-            print(f"Container Stdout (on error): {stdout_log[:200]}{'...' if len(stdout_log)>200 else ''}")
-        if stderr_log:
-            print(f"Container Stderr: {stderr_log[:200]}{'...' if len(stderr_log)>200 else ''}")
 
         # --- Process Results ---
         if exit_code == 0:
@@ -284,61 +248,46 @@ def run_in_container(docker_client, command_input, input_data=None, session_auth
         else:
             # Command failed, return the prioritized error output
             error_message = output_for_processing or f"Container exited with code {exit_code} but no output captured."
+            return False, error_message.strip()
 
-            # Special handling for "AlreadyExists" on 'create' commands
-            # Check the *original* command_input type and content
-            original_verb = None
-            original_executable = "unknown"
-            if isinstance(command_input, list) and len(command_input) > 0:
-                 original_executable = command_input[0]
-                 if len(command_input) > 1:
-                      original_verb = command_input[1]
-            # Cannot reliably determine verb from original string input easily
-
-            if original_executable in ['oc', 'kubectl'] and original_verb == 'create' and "AlreadyExists" in error_message:
-                 print(f"Info: '{original_executable} create' reported 'AlreadyExists'. Treating as success.")
-                 # Return success=True, but with a specific message, not the raw logs
-                 return True, f"{original_executable.capitalize()} resource already exists (ignored)."
-            else:
-                # Return failure with the captured error message
-                return False, error_message.strip()
-
-    # --- Exception Handling for Docker/Setup issues ---
+    # --- Outer Exceptions (Docker setup/connection issues, not container errors) ---
     except docker.errors.ImageNotFound as e:
-         print(f"CRITICAL Docker ImageNotFound error: {e}")
-         return False, f"Required Docker image '{CLI_DOCKER_IMAGE}' not found: {e}"
+        print(f"CRITICAL Docker ImageNotFound error: {e}")
+        return False, f"Required Docker image '{CLI_DOCKER_IMAGE}' not found: {e}"
     except docker.errors.APIError as e:
         print(f"CRITICAL Docker API Error: {e}")
         if "permission denied" in str(e).lower():
-             return False, f"Docker API permission error: Ensure the user running the backend has permissions for the Docker socket. Details: {e}"
+            return False, f"Docker API permission error: Ensure the user running the backend has permissions for the Docker socket. Details: {e}"
         return False, f"Docker API error: {e}"
     except Exception as e:
-        print(f"Unexpected Error in run_in_container: {e}")
-        traceback.print_exc() # Log full stack trace for unexpected errors
-        return False, f"Unexpected error during container execution: {e}"
-    finally:
-        # --- Final Cleanup of Temporary Files ---
+        print(f"Unexpected Error in run_in_container during initial setup/connection: {e}")
+        traceback.print_exc()
+        return False, f"Unexpected error during container execution setup: {e}"
+
+    finally: # Add a finally block here to ensure temp kubeconfig is cleaned up
         if temp_kubeconfig_filename and os.path.exists(temp_kubeconfig_filename):
-             try:
-                 os.remove(temp_kubeconfig_filename)
-                 # print(f"Deleted temp kubeconfig: {temp_kubeconfig_filename}")
-             except OSError as e_del: print(f"Error deleting temp kubeconfig {temp_kubeconfig_filename}: {e_del}")
-        if temp_input_filename and os.path.exists(temp_input_filename):
-             try:
-                 os.remove(temp_input_filename)
-                 # print(f"Deleted temp input file: {temp_input_filename}")
-             except OSError as e_del: print(f"Error deleting temp input file {temp_input_filename}: {e_del}")
+            try:
+                os.remove(temp_kubeconfig_filename)
+            except OSError as e:
+                print(f"Warning: Failed to remove temporary kubeconfig {temp_kubeconfig_filename}: {e}")
 
 
-# --- Cleanup Temporary Kubeconfigs ---
-def cleanup_temp_configs():
-     if os.path.exists(TEMP_KUBECONFIG_DIR):
-          print(f"Cleaning up temporary kubeconfig directory: {TEMP_KUBECONFIG_DIR}")
-          try:
-              shutil.rmtree(TEMP_KUBECONFIG_DIR)
-          except OSError as e:
-              print(f"Error removing temp directory {TEMP_KUBECONFIG_DIR}: {e}")
+# For temporary kubeconfig files from K8s login/run_in_container
+def cleanup_kube_configs():
+    if os.path.exists(OSF_KUBECONFIG_DIR):
+        print(f"Cleaning up temporary kubeconfig directory: {OSF_KUBECONFIG_DIR}")
+        try:
+            shutil.rmtree(OSF_KUBECONFIG_DIR, ignore_errors=True) # Use ignore_errors for robustness
+        except OSError as e:
+            print(f"Error removing temp directory {OSF_KUBECONFIG_DIR}: {e}")
 
-# Run cleanup when the application exits
-atexit.register(cleanup_temp_configs)
-
+# For temporary script/yaml files created by write_temp_files
+# This cleans the base directory and all subdirs
+def cleanup_exec_dir():
+    if os.path.exists(OSF_EXEC_DIR):
+        print(f"Cleaning up execution temporary directory: {OSF_EXEC_DIR}")
+        try:
+            # Use ignore_errors=True for robustness
+            shutil.rmtree(OSF_EXEC_DIR, ignore_errors=True)
+        except OSError as e:
+            print(f"Error removing execution temp directory {OSF_EXEC_DIR}: {e}")
